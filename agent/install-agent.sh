@@ -26,7 +26,7 @@ fi
 sudo python3 -m pip install -q psutil requests 2>/dev/null \
   || sudo python3 -m pip install -q --break-system-packages psutil requests
 
-cat | sudo tee "$INSTALL_DIR/agent/agent.json" >/dev/null <<EOF
+sudo tee "$INSTALL_DIR/agent/agent.json" >/dev/null <<EOF
 {
   "server": "$PANEL_SERVER",
   "secret": "$PANEL_SECRET",

@@ -85,7 +85,7 @@ sleep 3
 
 # 6. 验证
 if sudo systemctl is-active -q tianlong-panel; then
-  IP=$(curl -s -m 5 ifconfig.me 2>/dev/null || echo "服务器IP")
+  IP=$(curl -4 -s -m 5 ifconfig.me 2>/dev/null || curl -s -m 5 ifconfig.me 2>/dev/null || echo "服务器IP")
   echo ""
   echo "✅ 部署成功！看板地址: http://$IP:$PANEL_PORT"
   echo "📌 agent 用的密钥: $PANEL_SECRET（装 agent 时填这个）"
