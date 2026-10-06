@@ -64,7 +64,7 @@ canvas.chart{width:100%;height:150px;margin-top:8px;background:#0d1117;border-ra
     <label>面板地址 <input id="ai-url" size="28"></label>
   </div>
   <pre id="ai-cmd">加载中…</pre>
-  <div class="ai-row"><button onclick="copyCmd()">📋 复制命令</button><span id="ai-done">已复制 ✅</span></div>
+  <div class="ai-row"><button onclick="copyCmd()">📋 复制命令</button><button id="eye-btn" onclick="toggleSecret()" style="background:#21262d">👁 显示密钥</button><span id="ai-done">已复制 ✅</span></div>
 </div>
 
 <div class="sec" id="detail">
@@ -177,7 +177,7 @@ async function ask(){
     ans.textContent=r.answer||JSON.stringify(r);
   }catch(e){ans.textContent='请求失败: '+e}
 }
-let aiSecret='', aiScript='';
+let aiSecret='', aiScript='', secretShown=false;
 async function initInstall(){
   try{
     const r=await fetch('/api/agent-install').then(r=>r.json());
@@ -185,17 +185,26 @@ async function initInstall(){
     $('ai-url').value=location.protocol+'//'+location.host;
     renderCmd();
   }catch(e){$('ai-cmd').textContent='加载失败: '+e;}
+  $('ai-name').addEventListener('input',renderCmd);
+  $('ai-url').addEventListener('input',renderCmd);
 }
 function renderCmd(){
   const name=($('ai-name').value.trim()||'web-01').replace(/"/g,'');
   const url=$('ai-url').value.trim().replace(/\/+$/,'');
-  $('ai-cmd').textContent=`curl -sL ${aiScript} | sudo PANEL_SERVER="${url}" PANEL_SECRET="${aiSecret}" PANEL_NAME="${name}" bash`;
+  const sec=secretShown?aiSecret:'••••••••';
+  $('ai-cmd').textContent=`curl -sL ${aiScript} | sudo PANEL_SERVER="${url}" PANEL_SECRET="${sec}" PANEL_NAME="${name}" bash`;
   $('ai-done').style.display='none';
-  $('ai-name').addEventListener('input',renderCmd);
-  $('ai-url').addEventListener('input',renderCmd);
+}
+function toggleSecret(){
+  secretShown=!secretShown;
+  $('eye-btn').textContent=secretShown?'🙈 隐藏密钥':'👁 显示密钥';
+  renderCmd();
 }
 function copyCmd(){
-  navigator.clipboard.writeText($('ai-cmd').textContent).then(()=>{
+  const name=($('ai-name').value.trim()||'web-01').replace(/"/g,'');
+  const url=$('ai-url').value.trim().replace(/\/+$/,'');
+  const real=`curl -sL ${aiScript} | sudo PANEL_SERVER="${url}" PANEL_SECRET="${aiSecret}" PANEL_NAME="${name}" bash`;
+  navigator.clipboard.writeText(real).then(()=>{
     $('ai-done').style.display='inline';
   });
 }
