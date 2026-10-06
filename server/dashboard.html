@@ -39,6 +39,11 @@ canvas.chart{width:100%;height:150px;margin-top:8px;background:#0d1117;border-ra
 #ask-box input{flex:1;background:#0d1117;border:1px solid var(--border);color:var(--txt);border-radius:6px;padding:8px 10px;font-size:14px}
 #ask-box button{background:#1f6feb;border:none;color:#fff;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:14px}
 #ask-ans{white-space:pre-wrap;font-size:13px;background:#0d1117;border-radius:6px;padding:10px;margin-top:8px;max-height:260px;overflow:auto}
+#ai-cmd{background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-all;font-family:monospace;margin:8px 0}
+.ai-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--mut)}
+.ai-row input{background:#0d1117;border:1px solid var(--border);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px}
+.ai-row button{background:#1f6feb;border:none;color:#fff;border-radius:6px;padding:7px 16px;cursor:pointer;font-size:13px}
+#ai-done{color:var(--grn);font-size:13px;display:none}
 #detail{display:none}
 #detail h2{font-size:15px;margin-bottom:6px}
 .procs{font-size:12px;color:var(--mut);margin-top:8px}
@@ -50,6 +55,17 @@ canvas.chart{width:100%;height:150px;margin-top:8px;background:#0d1117;border-ra
 <div class="sub">比哪吒更强的服务器监控 · <a href="/map" style="color:#58a6ff">🌍 全球攻击地图</a> · <span id="clock"></span></div>
 
 <div class="grid" id="servers"></div>
+
+<div class="sec">
+  <h2>➕ 添加服务器</h2>
+  <div style="font-size:13px;color:var(--mut)">在要监控的服务器上粘贴运行下面这条命令即可（面板地址和密钥已自动填好）</div>
+  <div class="ai-row" style="margin-top:8px">
+    <label>服务器名 <input id="ai-name" value="web-01" size="10"></label>
+    <label>面板地址 <input id="ai-url" size="28"></label>
+  </div>
+  <pre id="ai-cmd">加载中…</pre>
+  <div class="ai-row"><button onclick="copyCmd()">📋 复制命令</button><span id="ai-done">已复制 ✅</span></div>
+</div>
 
 <div class="sec" id="detail">
   <h2 id="detail-title">服务器详情</h2>
@@ -161,8 +177,30 @@ async function ask(){
     ans.textContent=r.answer||JSON.stringify(r);
   }catch(e){ans.textContent='请求失败: '+e}
 }
+let aiSecret='', aiScript='';
+async function initInstall(){
+  try{
+    const r=await fetch('/api/agent-install').then(r=>r.json());
+    aiSecret=r.secret; aiScript=r.script;
+    $('ai-url').value=location.protocol+'//'+location.host;
+    renderCmd();
+  }catch(e){$('ai-cmd').textContent='加载失败: '+e;}
+}
+function renderCmd(){
+  const name=($('ai-name').value.trim()||'web-01').replace(/"/g,'');
+  const url=$('ai-url').value.trim().replace(/\/+$/,'');
+  $('ai-cmd').textContent=`curl -sL ${aiScript} | sudo PANEL_SERVER="${url}" PANEL_SECRET="${aiSecret}" PANEL_NAME="${name}" bash`;
+  $('ai-done').style.display='none';
+  $('ai-name').addEventListener('input',renderCmd);
+  $('ai-url').addEventListener('input',renderCmd);
+}
+function copyCmd(){
+  navigator.clipboard.writeText($('ai-cmd').textContent).then(()=>{
+    $('ai-done').style.display='inline';
+  });
+}
 setInterval(()=>{$('clock').textContent=new Date().toLocaleString()},1000);
-load(); setInterval(load,5000); setInterval(loadDetail,15000);
+initInstall(); load(); setInterval(load,5000); setInterval(loadDetail,15000);
 </script>
 </body>
 </html>

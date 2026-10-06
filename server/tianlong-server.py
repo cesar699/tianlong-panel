@@ -439,6 +439,12 @@ def attacks(hours: float = 24, limit: int = 200):
     c.close()
     return {"attacks": out, "ts": now()}
 
+@app.get("/api/agent-install")
+def agent_install():
+    """返回 agent 一键安装所需的密钥和脚本地址（看板据此拼出复制即用的命令）"""
+    return {"secret": CFG["secret"],
+            "script": "https://raw.githubusercontent.com/cesar699/tianlong-panel/main/agent/install-agent.sh"}
+
 @app.get("/api/probes/{server}")
 def probes(server: str):
     """某台服务器最近一次上报的探测 IP"""
