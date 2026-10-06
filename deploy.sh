@@ -10,15 +10,20 @@ REPO_RAW="https://raw.githubusercontent.com/cesar699/tianlong-panel/main"
 
 echo "🐉 天龙面板服务端一键部署"
 
-# 1. 检查 python
-if ! command -v python3 >/dev/null; then
-  echo "正在安装 python3..."
+# 1. 系统依赖：python3 / git / curl / venv
+need=""
+command -v python3 >/dev/null || need="$need python3"
+command -v git >/dev/null || need="$need git"
+command -v curl >/dev/null || need="$need curl"
+python3 -c "import ensurepip" 2>/dev/null || need="$need python3-venv"
+if [ -n "$need" ]; then
+  echo "→ 安装系统依赖:$need"
   if command -v apt-get >/dev/null; then
-    sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-venv curl
+    sudo apt-get update -qq && sudo apt-get install -y -qq $need
   elif command -v yum >/dev/null; then
-    sudo yum install -y -q python3 curl
+    sudo yum install -y -q python3 git curl
   else
-    echo "请先手动安装 python3"; exit 1
+    echo "请手动安装:$need"; exit 1
   fi
 fi
 
@@ -35,9 +40,10 @@ fi
 cd "$INSTALL_DIR"
 sudo chown -R "$(whoami)" "$INSTALL_DIR"
 
-# 3. 虚拟环境 + 依赖
+# 3. 虚拟环境 + 依赖（重跑时先清掉坏掉的 venv）
 echo "→ 安装依赖"
-python3 -m venv .venv 2>/dev/null || python3 -m venv --without-pip .venv
+rm -rf .venv
+python3 -m venv .venv
 .venv/bin/pip install -q -r requirements.txt
 
 # 4. 生成配置

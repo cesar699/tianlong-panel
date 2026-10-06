@@ -20,7 +20,11 @@ sudo mkdir -p "$INSTALL_DIR/agent"
 curl -sL "https://raw.githubusercontent.com/cesar699/tianlong-panel/main/agent/tianlong-agent.py" \
   -o /tmp/tianlong-agent.py
 sudo mv /tmp/tianlong-agent.py "$INSTALL_DIR/agent/"
-sudo pip install -q psutil requests 2>/dev/null || sudo pip install -q --break-system-packages psutil requests
+if ! sudo python3 -c "import pip" 2>/dev/null; then
+  if command -v apt-get >/dev/null; then sudo apt-get install -y -qq python3-pip; fi
+fi
+sudo python3 -m pip install -q psutil requests 2>/dev/null \
+  || sudo python3 -m pip install -q --break-system-packages psutil requests
 
 cat | sudo tee "$INSTALL_DIR/agent/agent.json" >/dev/null <<EOF
 {
