@@ -47,7 +47,7 @@ canvas.chart{width:100%;height:150px;margin-top:8px;background:#0d1117;border-ra
 </head>
 <body>
 <h1>🐉 天龙面板</h1>
-<div class="sub">比哪吒更强的服务器监控 · <span id="clock"></span></div>
+<div class="sub">比哪吒更强的服务器监控 · <a href="/map" style="color:#58a6ff">🌍 全球攻击地图</a> · <span id="clock"></span></div>
 
 <div class="grid" id="servers"></div>
 
@@ -59,6 +59,7 @@ canvas.chart{width:100%;height:150px;margin-top:8px;background:#0d1117;border-ra
   <canvas class="chart" id="ch-cpu" width="600" height="150"></canvas>
   <canvas class="chart" id="ch-mem" width="600" height="150"></canvas>
   <div class="procs" id="d-procs"></div>
+  <div class="procs" id="d-probes" style="margin-top:10px"></div>
 </div>
 
 <div class="sec">
@@ -144,6 +145,12 @@ async function loadDetail(){
   const ps=m.top_procs||[];
   $('d-procs').innerHTML='<b>最占资源的进程</b>'+ps.map(p=>
     `<div><span>${p.name} (pid ${p.pid})</span><span>CPU ${p.cpu}% · MEM ${p.mem}%</span></div>`).join('');
+  try{
+    const pr=await fetch('/api/probes/'+encodeURIComponent(selServer)).then(r=>r.json());
+    $('d-probes').innerHTML='<b>🛡️ 正在扫 22 端口的可疑 IP</b>'+(pr.probes.length?pr.probes.map(p=>
+      `<div><span style="font-family:monospace">${p.ip}</span><span>${p.country||''} ${p.city||''} · ${p.attempts} 次</span></div>`).join('')
+      :'<div style="color:#3fb950">暂无 🎉</div>');
+  }catch(e){$('d-probes').innerHTML='';}
 }
 async function ask(){
   const q=$('ask-q').value.trim(); if(!q)return;

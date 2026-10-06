@@ -78,6 +78,14 @@ def init_db():
     CREATE TABLE IF NOT EXISTS appchecks(
         name TEXT PRIMARY KEY, type TEXT, target TEXT,
         last_ok INTEGER, last_latency_ms REAL, last_msg TEXT, ssl_days REAL, checked_ts REAL);
+    CREATE TABLE IF NOT EXISTS probes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, server TEXT, ip TEXT,
+        attempts INTEGER, ts REAL);
+    CREATE INDEX IF NOT EXISTS idx_probes_ts ON probes(ts);
+    CREATE INDEX IF NOT EXISTS idx_probes_ip ON probes(ip);
+    CREATE TABLE IF NOT EXISTS geoip(
+        ip TEXT PRIMARY KEY, country TEXT, city TEXT,
+        lat REAL, lon REAL, ts REAL);
     """)
     c.commit(); c.close()
 
@@ -118,6 +126,14 @@ async def report(req: Request):
                    json.dumps(m.get("top_procs", []), ensure_ascii=False)))
         # 只保留 7 天
         c.execute("DELETE FROM metrics WHERE ts < ?", (now() - 7*86400,))
+        # SSH 探测记录
+        for p in (m.get("ssh_probes") or []):
+            try:
+                c.execute("INSERT INTO probes(server,ip,attempts,ts) VALUES(?,?,?,?)",
+                          (name, p["ip"][:45], int(p["attempts"]), now()))
+            except Exception:
+                pass
+        c.execute("DELETE FROM probes WHERE ts < ?", (now() - 7*86400,))
         c.commit(); c.close()
     return {"ok": True}
 
@@ -273,6 +289,18 @@ def alert_loop():
                                f"{name} 按当前增速约 {eta:.1f} 天后磁盘写满（预测）")
                 else:
                     resolve_alert(name, "disk_eta")
+                # SSH 爆破检测：10 分钟内单个 IP 尝试超 100 次
+                c2 = db()
+                br = c2.execute("""
+                    SELECT ip, SUM(attempts) AS n FROM probes
+                    WHERE server=? AND ts>? GROUP BY ip ORDER BY n DESC LIMIT 1""",
+                    (name, now()-600)).fetchone()
+                c2.close()
+                if br and br["n"] and br["n"] > 100:
+                    push_alert(name, "ssh_bf", "critical",
+                               f"{name} 疑似遭 SSH 爆破：{br['ip']} 10分钟内尝试 {br['n']} 次")
+                else:
+                    resolve_alert(name, "ssh_bf")
         except Exception as e:
             print("告警引擎异常:", e)
         time.sleep(60)
@@ -343,6 +371,92 @@ def check_loop():
             print("应用监控异常:", e)
         time.sleep(60)
 
+# ---------------- IP 归属地 ----------------
+def geo_lookup_batch(ips):
+    """用 ip-api.com 批量查询归属地（免费 45 次/分钟，batch 一次算 1 次）"""
+    try:
+        body = json.dumps([{"query": ip} for ip in ips]).encode()
+        url = ("http://ip-api.com/batch?fields=status,message,country,city,lat,lon,query")
+        req = urllib.request.Request(url, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        print("归属地查询失败:", e)
+        return []
+
+def geo_loop():
+    while True:
+        try:
+            c = db()
+            rows = c.execute("""
+                SELECT DISTINCT ip FROM probes
+                WHERE ts > ? AND ip NOT IN (SELECT ip FROM geoip)
+                LIMIT 90""", (now() - 24*3600,)).fetchall()
+            c.close()
+            ips = [r["ip"] for r in rows]
+            # 跳过内网 IP
+            ips = [ip for ip in ips
+                   if not (ip.startswith("10.") or ip.startswith("192.168.")
+                           or ip.startswith("172.16.") or ip == "127.0.0.1")]
+            if ips:
+                with db_lock:
+                    c = db()
+                    for item in geo_lookup_batch(ips):
+                        if item.get("status") == "success":
+                            c.execute("""INSERT OR REPLACE INTO geoip
+                                         (ip,country,city,lat,lon,ts) VALUES(?,?,?,?,?,?)""",
+                                      (item["query"], item.get("country", ""),
+                                       item.get("city", ""), item.get("lat"),
+                                       item.get("lon"), now()))
+                    c.commit(); c.close()
+        except Exception as e:
+            print("归属地线程异常:", e)
+        time.sleep(120)
+
+# ---------------- 攻击聚合 API ----------------
+@app.get("/api/attacks")
+def attacks(hours: float = 24, limit: int = 200):
+    c = db()
+    rows = c.execute("""
+        SELECT ip, SUM(attempts) AS attempts,
+               GROUP_CONCAT(DISTINCT server) AS servers, MAX(ts) AS last_seen
+        FROM probes WHERE ts > ? GROUP BY ip ORDER BY attempts DESC LIMIT ?""",
+        (now() - hours*3600, limit)).fetchall()
+    out = []
+    for r in rows:
+        g = c.execute("SELECT country,city,lat,lon FROM geoip WHERE ip=?",
+                      (r["ip"],)).fetchone()
+        out.append({
+            "ip": r["ip"], "attempts": r["attempts"],
+            "servers": (r["servers"] or "").split(","),
+            "last_seen": r["last_seen"],
+            "country": g["country"] if g else "",
+            "city": g["city"] if g else "",
+            "lat": g["lat"] if g else None,
+            "lon": g["lon"] if g else None,
+        })
+    c.close()
+    return {"attacks": out, "ts": now()}
+
+@app.get("/api/probes/{server}")
+def probes(server: str):
+    """某台服务器最近一次上报的探测 IP"""
+    c = db()
+    r = c.execute("SELECT MAX(ts) AS mts FROM probes WHERE server=?", (server,)).fetchone()
+    out = []
+    if r and r["mts"]:
+        rows = c.execute(
+            "SELECT ip,attempts FROM probes WHERE server=? AND ts>? ORDER BY attempts DESC LIMIT 20",
+            (server, r["mts"] - 120)).fetchall()
+        for x in rows:
+            g = c.execute("SELECT country,city FROM geoip WHERE ip=?", (x["ip"],)).fetchone()
+            out.append({"ip": x["ip"], "attempts": x["attempts"],
+                        "country": g["country"] if g else "",
+                        "city": g["city"] if g else ""})
+    c.close()
+    return {"probes": out}
+
 # ---------------- AI 运维助手 ----------------
 def build_context():
     c = db()
@@ -350,6 +464,9 @@ def build_context():
     alts = [dict(r) for r in c.execute(
         "SELECT * FROM alerts WHERE resolved=0 ORDER BY ts DESC LIMIT 10").fetchall()]
     chks = [dict(r) for r in c.execute("SELECT * FROM appchecks").fetchall()]
+    atk = [dict(r) for r in c.execute("""
+        SELECT ip, SUM(attempts) AS n FROM probes
+        WHERE ts > ? GROUP BY ip ORDER BY n DESC LIMIT 5""", (now()-24*3600,)).fetchall()]
     c.close()
     lines = []
     for s in srvs:
@@ -366,6 +483,9 @@ def build_context():
     if chks:
         ctx += "\n应用监控:\n" + "\n".join(
             f"- {x['name']}: {'正常' if x['last_ok'] else '异常'}({x['last_msg']})" for x in chks)
+    if atk:
+        ctx += "\n24h 内扫描 22 端口最多的 IP:\n" + "\n".join(
+            f"- {a['ip']}: {a['n']} 次" for a in atk)
     return ctx
 
 def rule_answer(q):
@@ -453,10 +573,19 @@ async def ask(req: Request):
 def index():
     return FileResponse(os.path.join(BASE, "dashboard.html"))
 
+@app.get("/map")
+def attack_map():
+    return FileResponse(os.path.join(BASE, "map.html"))
+
+@app.get("/world.svg")
+def world_svg():
+    return FileResponse(os.path.join(BASE, "world.svg"), media_type="image/svg+xml")
+
 # ---------------- 启动 ----------------
 if __name__ == "__main__":
     import uvicorn
     threading.Thread(target=alert_loop, daemon=True).start()
     threading.Thread(target=check_loop, daemon=True).start()
+    threading.Thread(target=geo_loop, daemon=True).start()
     print(f"天龙面板 Server 启动: http://0.0.0.0:{CFG['port']}")
     uvicorn.run(app, host="0.0.0.0", port=CFG["port"], log_level="warning")

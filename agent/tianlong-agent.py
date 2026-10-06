@@ -10,10 +10,12 @@
 """
 import json
 import os
+import re
 import socket
 import sys
 import time
 import platform
+from datetime import datetime
 
 try:
     import psutil
@@ -35,6 +37,44 @@ def load_config():
         "name":     os.environ.get("TIANLONG_NAME", cfg.get("name", socket.gethostname())),
         "interval": int(os.environ.get("TIANLONG_INTERVAL", cfg.get("interval", 10))),
     }
+
+
+def collect_ssh_probes(window_min=10):
+    """统计最近 window_min 分钟内 SSH 密码爆破的来源 IP（需要能读系统登录日志）"""
+    pats = [
+        re.compile(r"Failed password.*? from (\d{1,3}(?:\.\d{1,3}){3})"),
+        re.compile(r"Invalid user .*? from (\d{1,3}(?:\.\d{1,3}){3})"),
+    ]
+    logs = ["/var/log/auth.log", "/var/log/secure"]
+    cutoff = time.time() - window_min * 60
+    counts = {}
+    now_year = datetime.now().year
+    for path in logs:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, errors="ignore") as f:
+                lines = f.readlines()[-5000:]
+        except (PermissionError, OSError):
+            continue
+        for line in lines:
+            ip = None
+            for pat in pats:
+                m = pat.search(line)
+                if m:
+                    ip = m.group(1)
+                    break
+            if not ip:
+                continue
+            try:
+                ts = datetime.strptime(f"{now_year} {line[:15]}", "%Y %b %d %H:%M:%S").timestamp()
+            except Exception:
+                continue
+            if ts < cutoff:
+                continue
+            counts[ip] = counts.get(ip, 0) + 1
+    return [{"ip": ip, "attempts": n}
+            for ip, n in sorted(counts.items(), key=lambda x: -x[1])[:50]]
 
 
 def collect(prev_net):
@@ -87,6 +127,7 @@ def collect(prev_net):
         "uptime_s": uptime,
         "platform": f"{platform.system()} {platform.release()} {platform.machine()}",
         "top_procs": top,
+        "ssh_probes": collect_ssh_probes(),
     }, new_prev
 
 
