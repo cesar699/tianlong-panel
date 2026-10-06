@@ -1,0 +1,5 @@
+fastapi>=0.110
+uvicorn>=0.29
+# agent 还需要:
+psutil>=5.9
+requests>=2.31

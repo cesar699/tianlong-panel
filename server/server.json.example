@@ -1,0 +1,1 @@
+{"checks":[{"name":"面板自身","target":"http://127.0.0.1:8009/","type":"http"}],"port":8009,"secret":"和 agent.json 里一致的密钥"}
