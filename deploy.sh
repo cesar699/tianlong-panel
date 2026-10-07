@@ -18,10 +18,36 @@ fi
 
 if ! command -v go >/dev/null || ! go version 2>/dev/null | grep -q "go1.26"; then
     echo "安装 Go 1.26.8..."
-    curl -sL --max-time 300 -o /tmp/go.tgz https://go.dev/dl/go1.26.8.linux-amd64.tar.gz
+    GO_TGZ="/tmp/go.tgz"
+    GO_URLS=(
+        "https://dl.google.com/go/go1.26.8.linux-amd64.tar.gz"
+        "https://mirrors.aliyun.com/golang/go1.26.8.linux-amd64.tar.gz"
+        "https://go.dev/dl/go1.26.8.linux-amd64.tar.gz"
+    )
+    GO_OK=0
+    for GO_URL in "${GO_URLS[@]}"; do
+        echo "尝试下载: $GO_URL"
+        rm -f "$GO_TGZ"
+        if curl -sL --retry 2 --max-time 300 -o "$GO_TGZ" "$GO_URL"; then
+            GO_SIZE=$(stat -c%s "$GO_TGZ" 2>/dev/null || echo 0)
+            if [ "$GO_SIZE" -gt 60000000 ]; then
+                echo "下载成功 ($GO_SIZE 字节)"
+                GO_OK=1
+                break
+            else
+                echo "下载不完整 ($GO_SIZE 字节)，换源..."
+            fi
+        else
+            echo "下载失败，换源..."
+        fi
+    done
+    if [ "$GO_OK" -ne 1 ]; then
+        echo "ERROR: Go 下载失败，请检查网络或手动安装 Go 1.26.8+"
+        exit 1
+    fi
     sudo rm -rf /usr/local/go
-    sudo tar -C /usr/local -xzf /tmp/go.tgz
-    rm -f /tmp/go.tgz
+    sudo tar -C /usr/local -xzf "$GO_TGZ"
+    rm -f "$GO_TGZ"
 fi
 export PATH=$PATH:/usr/local/go/bin
 go version
