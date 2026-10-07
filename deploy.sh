@@ -1,95 +1,106 @@
 #!/bin/bash
-# 天龙面板服务端一键部署脚本
+# 天龙面板一键部署脚本（基于哪吒 Nezha 二次开发）
 # 用法: curl -sL https://raw.githubusercontent.com/cesar699/tianlong-panel/main/deploy.sh | bash
-# 可选环境变量: PANEL_PORT(默认8009) PANEL_SECRET(默认随机生成)
 set -e
 
-PANEL_PORT="${PANEL_PORT:-8009}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/tianlong-panel}"
-REPO_RAW="https://raw.githubusercontent.com/cesar699/tianlong-panel/main"
+NEZHA_VERSION="9881c47f0cc92256ba203919da5a25fab79a6bad"
+INSTALL_DIR="/opt/tianlong-panel"
+PORT="8009"
 
-echo "🐉 天龙面板服务端一键部署"
+echo "=== 天龙面板部署开始 ==="
 
-# 1. 系统依赖：python3 / git / curl / venv
-need=""
-command -v python3 >/dev/null || need="$need python3"
-command -v git >/dev/null || need="$need git"
-command -v curl >/dev/null || need="$need curl"
-python3 -c "import ensurepip" 2>/dev/null || need="$need python3-venv"
-if [ -n "$need" ]; then
-  echo "→ 安装系统依赖:$need"
-  if command -v apt-get >/dev/null; then
-    sudo apt-get update -qq && sudo apt-get install -y -qq $need
-  elif command -v yum >/dev/null; then
-    sudo yum install -y -q python3 git curl
-  else
-    echo "请手动安装:$need"; exit 1
-  fi
+if command -v apt-get >/dev/null; then
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq git curl build-essential unzip 2>&1 | tail -1
+elif command -v yum >/dev/null; then
+    sudo yum install -y git curl gcc unzip 2>&1 | tail -1
 fi
 
-# 2. 拉代码
-echo "→ 拉取代码到 $INSTALL_DIR"
-sudo mkdir -p "$INSTALL_DIR"
-if [ -d "$INSTALL_DIR/.git" ]; then
-  sudo git -C "$INSTALL_DIR" pull -q 2>/dev/null || true
-else
-  sudo rm -rf "$INSTALL_DIR"
-  git clone -q "https://github.com/cesar699/tianlong-panel.git" "$INSTALL_DIR" 2>/dev/null \
-    || { echo "git clone 失败，请先安装 git"; exit 1; }
+if ! command -v go >/dev/null || ! go version 2>/dev/null | grep -q "go1.26"; then
+    echo "安装 Go 1.26.8..."
+    curl -sL --max-time 300 -o /tmp/go.tgz https://go.dev/dl/go1.26.8.linux-amd64.tar.gz
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf /tmp/go.tgz
+    rm -f /tmp/go.tgz
 fi
-cd "$INSTALL_DIR"
-sudo chown -R "$(whoami)" "$INSTALL_DIR"
+export PATH=$PATH:/usr/local/go/bin
+go version
 
-# 3. 虚拟环境 + 依赖（重跑时先清掉坏掉的 venv）
-echo "→ 安装依赖"
-rm -rf .venv
-python3 -m venv .venv
-.venv/bin/pip install -q -r requirements.txt
+WORKDIR=$(mktemp -d)
+cd "$WORKDIR"
+echo "拉取哪吒源码..."
+git clone --depth 1 https://github.com/nezhahq/nezha.git nezha
+cd nezha
+git fetch --depth 1 origin "$NEZHA_VERSION" 2>/dev/null || true
+git checkout "$NEZHA_VERSION" 2>/dev/null || true
 
-# 4. 生成配置
-if [ -z "$PANEL_SECRET" ]; then
-  PANEL_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(16))")
-  echo "→ 已生成随机密钥（agent 也要用这个）: $PANEL_SECRET"
-fi
-cat > server/server.json <<EOF
-{
-  "secret": "$PANEL_SECRET",
-  "port": $PANEL_PORT,
-  "checks": []
-}
+echo "应用天龙补丁..."
+curl -sL --max-time 60 -o /tmp/tianlong.patch https://raw.githubusercontent.com/cesar699/tianlong-panel/main/tianlong.patch
+patch -p1 < /tmp/tianlong.patch || { echo "补丁应用失败"; exit 1; }
+
+echo "复制天龙功能包..."
+mkdir -p service/tianlong/web
+for f in model.go tianlong.go attack.go disk.go ai.go web.go; do
+    curl -sL --max-time 30 -o "service/tianlong/$f" "https://raw.githubusercontent.com/cesar699/tianlong-panel/main/service/tianlong/$f"
+done
+curl -sL --max-time 30 -o service/tianlong/web/map.html "https://raw.githubusercontent.com/cesar699/tianlong-panel/main/service/tianlong/web/map.html"
+curl -sL --max-time 30 -o service/tianlong/web/world.svg "https://raw.githubusercontent.com/cesar699/tianlong-panel/main/service/tianlong/web/world.svg"
+
+echo "下载前端..."
+for t in "admin-dist|https://github.com/nezhahq/admin-frontend|v2.3.8" "user-dist|https://github.com/hamster1963/nezha-dash-v2|v2.4.3"; do
+    path=$(echo $t | cut -d'|' -f1); repo=$(echo $t | cut -d'|' -f2); ver=$(echo $t | cut -d'|' -f3)
+    d=$(mktemp -d) && cd $d && curl -sL --max-time 120 -o dist.zip "$repo/releases/download/$ver/dist.zip" && unzip -q dist.zip && rm -rf "$WORKDIR/nezha/cmd/dashboard/$path" && mv dist "$WORKDIR/nezha/cmd/dashboard/$path" && cd "$WORKDIR/nezha" && rm -rf $d
+done
+
+echo "编译中（约 3-5 分钟）..."
+mkdir -p cmd/dashboard/docs
+cat > cmd/dashboard/docs/docs.go <<'EOF'
+package docs
+var SwaggerInfo = struct{ Version string }{Version: "tianlong"}
 EOF
-echo "→ 配置已写入 server/server.json"
+export GOTOOLCHAIN=go1.26.8
+export TMPDIR=/tmp
+CGO_ENABLED=1 go build -tags go_json -trimpath -buildvcs=false -ldflags "-s -w" -o tianlong-panel ./cmd/dashboard
 
-# 5. systemd 服务
-echo "→ 注册系统服务"
-PYBIN="$INSTALL_DIR/.venv/bin/python"
-sudo tee /etc/systemd/system/tianlong-panel.service >/dev/null <<EOF
+echo "安装到 $INSTALL_DIR..."
+sudo mkdir -p "$INSTALL_DIR"
+sudo cp tianlong-panel "$INSTALL_DIR/"
+sudo chmod +x "$INSTALL_DIR/tianlong-panel"
+
+if [ ! -f "$INSTALL_DIR/config.yaml" ]; then
+    sudo tee "$INSTALL_DIR/config.yaml" > /dev/null <<EOF
+listen_port: $PORT
+language: zh_CN
+site_name: "天龙面板"
+EOF
+fi
+
+sudo tee /etc/systemd/system/tianlong-panel.service > /dev/null <<EOF
 [Unit]
-Description=天龙面板 Server
+Description=天龙面板 (基于哪吒)
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=$INSTALL_DIR/server
-ExecStart=$PYBIN $INSTALL_DIR/server/tianlong-server.py
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/tianlong-panel -c $INSTALL_DIR/config.yaml -db $INSTALL_DIR/sqlite.db
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo systemctl daemon-reload
-sudo systemctl enable -q tianlong-panel
-sudo systemctl restart tianlong-panel
-sleep 3
 
-# 6. 验证
-if sudo systemctl is-active -q tianlong-panel; then
-  IP=$(curl -4 -s -m 5 ifconfig.me 2>/dev/null || curl -s -m 5 ifconfig.me 2>/dev/null || echo "服务器IP")
-  echo ""
-  echo "✅ 部署成功！看板地址: http://$IP:$PANEL_PORT"
-  echo "📌 agent 用的密钥: $PANEL_SECRET（装 agent 时填这个）"
-else
-  echo "❌ 服务启动失败，看日志: sudo journalctl -u tianlong-panel -n 50"
-  exit 1
-fi
+sudo systemctl daemon-reload
+sudo systemctl enable tianlong-panel
+sudo systemctl restart tianlong-panel
+rm -rf "$WORKDIR" /tmp/tianlong.patch
+
+echo ""
+echo "=== 天龙面板部署完成 ==="
+echo "面板地址: http://$(curl -s -m 5 ifconfig.me 2>/dev/null || echo '服务器IP'):$PORT"
+echo "默认账号: admin / admin（首次登录）"
+echo "独家功能:"
+echo "  - 全球攻击地图: http://IP:$PORT/tianlong/map"
+echo "  - AI 运维助手: POST http://IP:$PORT/tianlong/api/ask"
+echo "  - 磁盘写满预测: http://IP:$PORT/tianlong/api/disk-prediction"
