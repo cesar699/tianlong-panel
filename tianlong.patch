@@ -1,0 +1,1067 @@
+diff --git a/cmd/dashboard/controller/controller.go b/cmd/dashboard/controller/controller.go
+index a3dd50b..c207a1c 100644
+--- a/cmd/dashboard/controller/controller.go
++++ b/cmd/dashboard/controller/controller.go
+@@ -23,6 +23,7 @@ import (
+ 	"github.com/nezhahq/nezha/model"
+ 	"github.com/nezhahq/nezha/pkg/utils"
+ 	"github.com/nezhahq/nezha/service/singleton"
++	"github.com/nezhahq/nezha/service/tianlong"
+ )
+ 
+ func ServeWeb(frontendDist fs.FS) http.Handler {
+@@ -34,7 +35,7 @@ func ServeWeb(frontendDist fs.FS) http.Handler {
+ 		pprof.Register(r)
+ 	}
+ 	if singleton.Conf.Debug {
+-		log.Printf("NEZHA>> Swagger(%s) UI available at http://localhost:%d/swagger/index.html", docs.SwaggerInfo.Version, singleton.Conf.ListenPort)
++		log.Printf("天龙>> Swagger(%s) UI available at http://localhost:%d/swagger/index.html", docs.SwaggerInfo.Version, singleton.Conf.ListenPort)
+ 		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
+ 	}
+ 
+@@ -50,6 +51,9 @@ func ServeWeb(frontendDist fs.FS) http.Handler {
+ }
+ 
+ func routers(r *gin.Engine, frontendDist fs.FS) {
++	// 天龙面板独家功能路由
++	tianlong.RegisterRoutes(r)
++
+ 	authMiddleware, err := jwt.New(initParams())
+ 	if err != nil {
+ 		log.Fatal("JWT Error:" + err.Error())
+@@ -283,13 +287,13 @@ func handle[T any](c *gin.Context, handler handlerFunc[T]) {
+ 	}
+ 	switch err.(type) {
+ 	case *gormError:
+-		log.Printf("NEZHA>> gorm error: %v", err)
++		log.Printf("天龙>> gorm error: %v", err)
+ 		c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("database error")))
+ 		return
+ 	case *wsError:
+ 		// Connection is upgraded to WebSocket, so c.Writer is no longer usable
+ 		if msg := err.Error(); msg != "" {
+-			log.Printf("NEZHA>> websocket error: %v", err)
++			log.Printf("天龙>> websocket error: %v", err)
+ 		}
+ 		return
+ 	default:
+diff --git a/cmd/dashboard/controller/dashboard_credential.go b/cmd/dashboard/controller/dashboard_credential.go
+index f16e3e3..33214cb 100644
+--- a/cmd/dashboard/controller/dashboard_credential.go
++++ b/cmd/dashboard/controller/dashboard_credential.go
+@@ -158,5 +158,5 @@ func isDashboardSignedJWT(token string) bool {
+ // logDashboardCredentialUnclassifiable records a classification failure. The
+ // credential value itself is never included in the message.
+ func logDashboardCredentialUnclassifiable(reason string) {
+-	log.Printf("NEZHA>> NAT ingress: credential value could not be classified (%s); stripping it as a precaution", reason)
++	log.Printf("天龙>> NAT ingress: credential value could not be classified (%s); stripping it as a precaution", reason)
+ }
+diff --git a/cmd/dashboard/controller/mcp_audit.go b/cmd/dashboard/controller/mcp_audit.go
+index 6a6048a..557f47a 100644
+--- a/cmd/dashboard/controller/mcp_audit.go
++++ b/cmd/dashboard/controller/mcp_audit.go
+@@ -34,7 +34,7 @@ func mcpAuditWrite(entry model.MCPAuditLog, argsBytes []byte) {
+ 			return
+ 		}
+ 		if err := db.Create(&e).Error; err != nil {
+-			log.Printf("NEZHA>> mcp audit write failed: %v", err)
++			log.Printf("天龙>> mcp audit write failed: %v", err)
+ 		}
+ 	}
+ 	if mcpAuditSync {
+diff --git a/cmd/dashboard/controller/setting.go b/cmd/dashboard/controller/setting.go
+index 0b6b70e..c29d390 100644
+--- a/cmd/dashboard/controller/setting.go
++++ b/cmd/dashboard/controller/setting.go
+@@ -154,7 +154,7 @@ func fireMCPKillSwitch() {
+ 	purgedURLs := PurgeTransferEntries()
+ 	revokedStreams := rpc.NezhaHandlerSingleton.RevokeStreamsForPurpose(rpc.PurposeMCPTransfer)
+ 	cancelledRPC := rpc.CancelAllMCPInflight()
+-	log.Printf("NEZHA>> MCP kill switch fired: purged=%d urls, revoked=%d streams, cancelled=%d rpc",
++	log.Printf("天龙>> MCP kill switch fired: purged=%d urls, revoked=%d streams, cancelled=%d rpc",
+ 		purgedURLs, revokedStreams, cancelledRPC)
+ }
+ 
+diff --git a/cmd/dashboard/main.go b/cmd/dashboard/main.go
+index 4c41ae0..06e0dbc 100644
+--- a/cmd/dashboard/main.go
++++ b/cmd/dashboard/main.go
+@@ -27,6 +27,7 @@ import (
+ 	"github.com/nezhahq/nezha/pkg/utils"
+ 	"github.com/nezhahq/nezha/proto"
+ 	"github.com/nezhahq/nezha/service/singleton"
++	"github.com/nezhahq/nezha/service/tianlong"
+ )
+ 
+ type DashboardCliParam struct {
+@@ -70,6 +71,9 @@ func initSystem(bus chan<- *model.Service) error {
+ 		return err
+ 	}
+ 
++	// 天龙面板独家功能初始化
++	tianlong.Init()
++
+ 	if _, err := singleton.CronShared.AddFunc("0 30 3 * * *", singleton.CleanMonitorHistory); err != nil {
+ 		return err
+ 	}
+@@ -135,7 +139,7 @@ func main() {
+ 		func() error {
+ 			if singleton.Conf.Memory.GoMemLimitMB > 0 {
+ 				debug.SetMemoryLimit(singleton.Conf.Memory.GoMemLimitMB * 1024 * 1024)
+-				log.Printf("NEZHA>> Go memory limit set to %d MB", singleton.Conf.Memory.GoMemLimitMB)
++				log.Printf("天龙>> Go memory limit set to %d MB", singleton.Conf.Memory.GoMemLimitMB)
+ 			}
+ 			return nil
+ 		},
+@@ -196,33 +200,33 @@ func main() {
+ 	errHTTPS := errors.New("error from https server")
+ 
+ 	if err := graceful.Graceful(func() error {
+-		log.Printf("NEZHA>> Dashboard::START ON %s:%d", singleton.Conf.ListenHost, singleton.Conf.ListenPort)
++		log.Printf("天龙>> Dashboard::START ON %s:%d", singleton.Conf.ListenHost, singleton.Conf.ListenPort)
+ 		if singleton.Conf.HTTPS.ListenPort != 0 {
+ 			go func() {
+ 				errChan <- serveDashboardHTTPS(muxServerHTTPS, singleton.Conf.HTTPS.TLSCertPath, singleton.Conf.HTTPS.TLSKeyPath)
+ 			}()
+-			log.Printf("NEZHA>> Dashboard::START ON %s:%d", singleton.Conf.ListenHost, singleton.Conf.HTTPS.ListenPort)
++			log.Printf("天龙>> Dashboard::START ON %s:%d", singleton.Conf.ListenHost, singleton.Conf.HTTPS.ListenPort)
+ 		}
+ 		go func() {
+ 			errChan <- muxServerHTTP.Serve(l)
+ 		}()
+ 		return <-errChan
+ 	}, func(c context.Context) error {
+-		log.Println("NEZHA>> Graceful::START")
++		log.Println("天龙>> Graceful::START")
+ 		rpc.CloseReceiptGate()
+ 		singleton.RecordTransferHourlyUsage()
+ 		singleton.CloseTSDB()
+-		log.Println("NEZHA>> Graceful::END")
++		log.Println("天龙>> Graceful::END")
+ 		var err error
+ 		if muxServerHTTPS != nil {
+ 			err = muxServerHTTPS.Shutdown(c)
+ 		}
+ 		return errors.Join(muxServerHTTP.Shutdown(c), utils.IfOr(err != nil, utils.NewWrapError(errHTTPS, err), nil))
+ 	}); err != nil {
+-		log.Printf("NEZHA>> ERROR: %v", err)
++		log.Printf("天龙>> ERROR: %v", err)
+ 		var wrapError *utils.WrapError
+ 		if errors.As(err, &wrapError) {
+-			log.Printf("NEZHA>> ERROR HTTPS: %v", wrapError.Unwrap())
++			log.Printf("天龙>> ERROR HTTPS: %v", wrapError.Unwrap())
+ 		}
+ 	}
+ 
+diff --git a/cmd/dashboard/rpc/grpc_interceptor.go b/cmd/dashboard/rpc/grpc_interceptor.go
+index 68b80a0..dfac842 100644
+--- a/cmd/dashboard/rpc/grpc_interceptor.go
++++ b/cmd/dashboard/rpc/grpc_interceptor.go
+@@ -48,7 +48,7 @@ func ctxWithRealIP(ctx context.Context) (context.Context, error) {
+ 	}
+ 
+ 	if singleton.Conf.Debug {
+-		log.Printf("NEZHA>> gRPC Agent Real IP: %s, connecting IP: %s\n", ip, connectingIp)
++		log.Printf("天龙>> gRPC Agent Real IP: %s, connecting IP: %s\n", ip, connectingIp)
+ 	}
+ 
+ 	return context.WithValue(ctx, model.CtxKeyRealIP{}, ip), nil
+diff --git a/cmd/dashboard/rpc/nat.go b/cmd/dashboard/rpc/nat.go
+index 7b8be72..2ff0392 100644
+--- a/cmd/dashboard/rpc/nat.go
++++ b/cmd/dashboard/rpc/nat.go
+@@ -96,7 +96,7 @@ func ServeNAT(w http.ResponseWriter, r *http.Request, natConfig *model.NAT) {
+ 
+ 	if err := handler.UserConnected(streamId, wWrapped); err != nil {
+ 		if closeErr := wWrapped.Close(); closeErr != nil {
+-			log.Printf("NEZHA>> NAT request wrapper close error after user connection failure: %v", closeErr)
++			log.Printf("天龙>> NAT request wrapper close error after user connection failure: %v", closeErr)
+ 		}
+ 		return
+ 	}
+diff --git a/cmd/dashboard/rpc/service_dispatch.go b/cmd/dashboard/rpc/service_dispatch.go
+index 32e2ed3..092a9c0 100644
+--- a/cmd/dashboard/rpc/service_dispatch.go
++++ b/cmd/dashboard/rpc/service_dispatch.go
+@@ -17,12 +17,12 @@ func DispatchTask(serviceSentinelDispatchBus <-chan *model.Service) {
+ 		if err := model.ValidateServiceMonitorType(uint64(task.Type)); err != nil {
+ 			// Defense in depth for stale database rows and future internal callers:
+ 			// Service.Type shares its integer namespace with command/config tasks.
+-			log.Printf("NEZHA>> DispatchTask rejected service %d: %v", task.ID, err)
++			log.Printf("天龙>> DispatchTask rejected service %d: %v", task.ID, err)
+ 			continue
+ 		}
+ 		probe := task.PB()
+ 		if probe == nil {
+-			log.Printf("NEZHA>> DispatchTask rejected service %d: invalid probe", task.ID)
++			log.Printf("天龙>> DispatchTask rejected service %d: invalid probe", task.ID)
+ 			continue
+ 		}
+ 
+@@ -41,7 +41,7 @@ func DispatchTask(serviceSentinelDispatchBus <-chan *model.Service) {
+ 					continue
+ 				}
+ 				if err := server.SendTask(probe); err != nil && !errors.Is(err, model.ErrTaskStreamOffline) {
+-					log.Printf("NEZHA>> DispatchTask send error (server=%d): %v", id, err)
++					log.Printf("天龙>> DispatchTask send error (server=%d): %v", id, err)
+ 				}
+ 			}
+ 		case model.ServiceCoverAll:
+@@ -53,7 +53,7 @@ func DispatchTask(serviceSentinelDispatchBus <-chan *model.Service) {
+ 					continue
+ 				}
+ 				if err := server.SendTask(probe); err != nil && !errors.Is(err, model.ErrTaskStreamOffline) {
+-					log.Printf("NEZHA>> DispatchTask send error (server=%d): %v", id, err)
++					log.Printf("天龙>> DispatchTask send error (server=%d): %v", id, err)
+ 				}
+ 			}
+ 		}
+@@ -68,7 +68,7 @@ func DispatchKeepalive() {
+ 				continue
+ 			}
+ 			if err := s.SendTask(&proto.Task{Type: model.TaskTypeKeepalive}); err != nil && !errors.Is(err, model.ErrTaskStreamOffline) {
+-				log.Printf("NEZHA>> Keepalive send error (server=%d): %v", s.ID, err)
++				log.Printf("天龙>> Keepalive send error (server=%d): %v", s.ID, err)
+ 			}
+ 		}
+ 	})
+diff --git a/model/config.go b/model/config.go
+index fde4bd1..26c0135 100644
+--- a/model/config.go
++++ b/model/config.go
+@@ -176,6 +176,9 @@ func (c *Config) Read(path string, frontendTemplates []FrontendTemplate) error {
+ 	if c.ListenPort == 0 {
+ 		c.ListenPort = 8008
+ 	}
++	if c.SiteName == "" {
++		c.SiteName = "天龙面板"
++	}
+ 	if c.Language == "" {
+ 		c.Language = "en_US"
+ 	}
+diff --git a/pkg/ddns/ddns.go b/pkg/ddns/ddns.go
+index ef93b84..2599c08 100644
+--- a/pkg/ddns/ddns.go
++++ b/pkg/ddns/ddns.go
+@@ -47,18 +47,18 @@ func (provider *Provider) UpdateDomain(ctx context.Context, overrideDomains ...s
+ 			if soaErr == nil {
+ 				break
+ 			}
+-			log.Printf("NEZHA>> Failed to split domain SOA for %s (attempt %d/%d): %v", domain, retries+1, maxRetries, soaErr)
++			log.Printf("天龙>> Failed to split domain SOA for %s (attempt %d/%d): %v", domain, retries+1, maxRetries, soaErr)
+ 		}
+ 
+ 		if soaErr != nil {
+-			log.Printf("NEZHA>> Failed to split domain SOA for %s after %d retries, skipping domain", domain, maxRetries)
++			log.Printf("天龙>> Failed to split domain SOA for %s after %d retries, skipping domain", domain, maxRetries)
+ 			continue
+ 		}
+ 
+ 		// 独立处理 IPv4 更新或删除
+ 		if provider.DDNSProfile.EnableIPv4 != nil && *provider.DDNSProfile.EnableIPv4 {
+ 			for retries := 0; retries < maxRetries; retries++ {
+-				log.Printf("NEZHA>> Updating IPv4 record of domain %s: %d/%d", domain, retries+1, maxRetries)
++				log.Printf("天龙>> Updating IPv4 record of domain %s: %d/%d", domain, retries+1, maxRetries)
+ 				var ipv4Err error
+ 				if provider.IPAddrs.IPv4Addr == "" {
+ 					ipv4Err = provider.deleteDomainRecord(ctx, prefix, zone, "A")
+@@ -67,9 +67,9 @@ func (provider *Provider) UpdateDomain(ctx context.Context, overrideDomains ...s
+ 				}
+ 
+ 				if ipv4Err != nil {
+-					log.Printf("NEZHA>> Failed to update IPv4 record of domain %s: %v", domain, ipv4Err)
++					log.Printf("天龙>> Failed to update IPv4 record of domain %s: %v", domain, ipv4Err)
+ 				} else {
+-					log.Printf("NEZHA>> Update IPv4 record of domain %s succeeded", domain)
++					log.Printf("天龙>> Update IPv4 record of domain %s succeeded", domain)
+ 					break
+ 				}
+ 			}
+@@ -78,7 +78,7 @@ func (provider *Provider) UpdateDomain(ctx context.Context, overrideDomains ...s
+ 		// 独立处理 IPv6 更新或删除
+ 		if provider.DDNSProfile.EnableIPv6 != nil && *provider.DDNSProfile.EnableIPv6 {
+ 			for retries := 0; retries < maxRetries; retries++ {
+-				log.Printf("NEZHA>> Updating IPv6 record of domain %s: %d/%d", domain, retries+1, maxRetries)
++				log.Printf("天龙>> Updating IPv6 record of domain %s: %d/%d", domain, retries+1, maxRetries)
+ 				var ipv6Err error
+ 				if provider.IPAddrs.IPv6Addr == "" {
+ 					ipv6Err = provider.deleteDomainRecord(ctx, prefix, zone, "AAAA")
+@@ -87,9 +87,9 @@ func (provider *Provider) UpdateDomain(ctx context.Context, overrideDomains ...s
+ 				}
+ 
+ 				if ipv6Err != nil {
+-					log.Printf("NEZHA>> Failed to update IPv6 record of domain %s: %v", domain, ipv6Err)
++					log.Printf("天龙>> Failed to update IPv6 record of domain %s: %v", domain, ipv6Err)
+ 				} else {
+-					log.Printf("NEZHA>> Update IPv6 record of domain %s succeeded", domain)
++					log.Printf("天龙>> Update IPv6 record of domain %s succeeded", domain)
+ 					break
+ 				}
+ 			}
+@@ -117,7 +117,7 @@ func (provider *Provider) addDomainRecord(ctx context.Context, prefix, zone, rec
+ func (provider *Provider) deleteDomainRecord(ctx context.Context, prefix, zone, recType string) error {
+ 	deleter, okDeleter := provider.Setter.(libdns.RecordDeleter)
+ 	if !okDeleter {
+-		log.Printf("NEZHA>> DNS provider does not support RecordDeleter, safely skipping deletion for %s", recType)
++		log.Printf("天龙>> DNS provider does not support RecordDeleter, safely skipping deletion for %s", recType)
+ 		return nil
+ 	}
+ 
+@@ -132,7 +132,7 @@ func (provider *Provider) deleteDomainRecord(ctx context.Context, prefix, zone,
+ 		return fmt.Errorf("deleter.DeleteRecords failed: %w", err)
+ 	}
+ 
+-	log.Printf("NEZHA>> Successfully deleted %s record for %s.%s", recType, prefix, zone)
++	log.Printf("天龙>> Successfully deleted %s record for %s.%s", recType, prefix, zone)
+ 	return nil
+ }
+ 
+diff --git a/pkg/tsdb/maintenance.go b/pkg/tsdb/maintenance.go
+index 4f2c4a6..d81770f 100644
+--- a/pkg/tsdb/maintenance.go
++++ b/pkg/tsdb/maintenance.go
+@@ -14,7 +14,7 @@ func (db *TSDB) Maintenance() {
+ 		return
+ 	}
+ 
+-	log.Println("NEZHA>> TSDB starting maintenance (flush)...")
++	log.Println("天龙>> TSDB starting maintenance (flush)...")
+ 	db.debugFlushSafely()
+-	log.Println("NEZHA>> TSDB maintenance completed")
++	log.Println("天龙>> TSDB maintenance completed")
+ }
+diff --git a/pkg/tsdb/query.go b/pkg/tsdb/query.go
+index 6f4d8ff..28129d0 100644
+--- a/pkg/tsdb/query.go
++++ b/pkg/tsdb/query.go
+@@ -254,7 +254,7 @@ func (db *TSDB) queryMetricByServiceID(metric MetricType, serviceID string, tr s
+ 
+ 		mn := storage.GetMetricName()
+ 		if err := mn.Unmarshal(mbr.MetricName); err != nil {
+-			log.Printf("NEZHA>> TSDB: failed to unmarshal metric name: %v", err)
++			log.Printf("天龙>> TSDB: failed to unmarshal metric name: %v", err)
+ 			storage.PutMetricName(mn)
+ 			continue
+ 		}
+@@ -267,14 +267,14 @@ func (db *TSDB) queryMetricByServiceID(metric MetricType, serviceID string, tr s
+ 
+ 		serverID, err := strconv.ParseUint(string(serverIDBytes), 10, 64)
+ 		if err != nil {
+-			log.Printf("NEZHA>> TSDB: failed to parse server_id %q: %v", string(serverIDBytes), err)
++			log.Printf("天龙>> TSDB: failed to parse server_id %q: %v", string(serverIDBytes), err)
+ 			storage.PutMetricName(mn)
+ 			continue
+ 		}
+ 		storage.PutMetricName(mn)
+ 
+ 		if err := block.UnmarshalData(); err != nil {
+-			log.Printf("NEZHA>> TSDB: failed to unmarshal block data: %v", err)
++			log.Printf("天龙>> TSDB: failed to unmarshal block data: %v", err)
+ 			continue
+ 		}
+ 
+@@ -493,7 +493,7 @@ func (db *TSDB) QueryServerMetrics(serverID uint64, metric MetricType, period Qu
+ 		mbr.BlockRef.MustReadBlock(&block)
+ 
+ 		if err := block.UnmarshalData(); err != nil {
+-			log.Printf("NEZHA>> TSDB: failed to unmarshal block data: %v", err)
++			log.Printf("天龙>> TSDB: failed to unmarshal block data: %v", err)
+ 			continue
+ 		}
+ 
+@@ -620,7 +620,7 @@ func (db *TSDB) queryMetricByServerID(metric MetricType, serverID string, tr sto
+ 
+ 		mn := storage.GetMetricName()
+ 		if err := mn.Unmarshal(mbr.MetricName); err != nil {
+-			log.Printf("NEZHA>> TSDB: failed to unmarshal metric name: %v", err)
++			log.Printf("天龙>> TSDB: failed to unmarshal metric name: %v", err)
+ 			storage.PutMetricName(mn)
+ 			continue
+ 		}
+@@ -633,14 +633,14 @@ func (db *TSDB) queryMetricByServerID(metric MetricType, serverID string, tr sto
+ 
+ 		serviceID, err := strconv.ParseUint(string(serviceIDBytes), 10, 64)
+ 		if err != nil {
+-			log.Printf("NEZHA>> TSDB: failed to parse service_id %q: %v", string(serviceIDBytes), err)
++			log.Printf("天龙>> TSDB: failed to parse service_id %q: %v", string(serviceIDBytes), err)
+ 			storage.PutMetricName(mn)
+ 			continue
+ 		}
+ 		storage.PutMetricName(mn)
+ 
+ 		if err := block.UnmarshalData(); err != nil {
+-			log.Printf("NEZHA>> TSDB: failed to unmarshal block data: %v", err)
++			log.Printf("天龙>> TSDB: failed to unmarshal block data: %v", err)
+ 			continue
+ 		}
+ 
+diff --git a/pkg/tsdb/tsdb.go b/pkg/tsdb/tsdb.go
+index 9ae4a16..3329146 100644
+--- a/pkg/tsdb/tsdb.go
++++ b/pkg/tsdb/tsdb.go
+@@ -98,7 +98,7 @@ func Open(config *Config) (db *TSDB, err error) {
+ 
+ 	db.writer = newBufferedWriter(db, config.WriteBufferSize, config.WriteBufferFlushInterval)
+ 
+-	log.Printf("NEZHA>> TSDB opened at %s, retention: %d days, min free disk: %.1f GB, max memory: %d MB",
++	log.Printf("天龙>> TSDB opened at %s, retention: %d days, min free disk: %.1f GB, max memory: %d MB",
+ 		dataPath, config.RetentionDays, config.MinFreeDiskSpaceGB, config.MaxMemoryMB)
+ 
+ 	return db, nil
+@@ -135,20 +135,20 @@ func (db *TSDB) acceptsWrites() bool {
+ 	readOnly := db.readOnly != nil && db.readOnly.IsReadOnly()
+ 	if readOnly {
+ 		if db.readOnlyObserved.CompareAndSwap(false, true) {
+-			log.Println("NEZHA>> TSDB writes paused because free disk space is below the configured limit; dashboard, queries, and alerts remain available")
++			log.Println("天龙>> TSDB writes paused because free disk space is below the configured limit; dashboard, queries, and alerts remain available")
+ 		}
+ 		return false
+ 	}
+ 
+ 	if db.readOnlyObserved.CompareAndSwap(true, false) {
+-		log.Println("NEZHA>> TSDB writes resumed after free disk space recovered")
++		log.Println("天龙>> TSDB writes resumed after free disk space recovered")
+ 	}
+ 	return true
+ }
+ 
+ func (db *TSDB) pauseWritesAfterDiskFull(recovered any) {
+ 	if db.diskFullPaused.CompareAndSwap(false, true) {
+-		log.Printf("NEZHA>> TSDB disk is full; disabling TSDB writes until dashboard restart while keeping dashboard, queries, and alerts running: %v", recovered)
++		log.Printf("天龙>> TSDB disk is full; disabling TSDB writes until dashboard restart while keeping dashboard, queries, and alerts running: %v", recovered)
+ 	}
+ }
+ 
+@@ -199,7 +199,7 @@ func (db *TSDB) Close() error {
+ 
+ 	db.storage.MustClose()
+ 	db.closed = true
+-	log.Println("NEZHA>> TSDB closed")
++	log.Println("天龙>> TSDB closed")
+ 	return nil
+ }
+ 
+diff --git a/service/rpc/auth.go b/service/rpc/auth.go
+index 842426b..5797598 100644
+--- a/service/rpc/auth.go
++++ b/service/rpc/auth.go
+@@ -83,7 +83,7 @@ func (a *authHandler) check(ctx context.Context) (uint64, error) {
+ 			// is rejected.
+ 			verified, _, err := singleton.ServerTransferShared.MarkVerified(t.ServerID, t.ID)
+ 			if err != nil {
+-				log.Printf("NEZHA>> ServerTransfer MarkVerified(cid=%d) via handshake secret failed: %v", t.ServerID, err)
++				log.Printf("天龙>> ServerTransfer MarkVerified(cid=%d) via handshake secret failed: %v", t.ServerID, err)
+ 				return 0, status.Error(codes.Unauthenticated, "transfer handshake verification failed")
+ 			}
+ 			if verified {
+@@ -121,7 +121,7 @@ func (a *authHandler) check(ctx context.Context) (uint64, error) {
+ 			model.UnblockIP(singleton.DB, ip, model.BlockIDgRPC)
+ 			if kind == singleton.TerminalRecoveryRevert {
+ 				if err := singleton.ServerTransferShared.MarkRevertDelivered(t.ServerID, t.ID); err != nil {
+-					log.Printf("NEZHA>> ServerTransfer MarkRevertDelivered(server=%d transfer=%d) failed: %v", t.ServerID, t.ID, err)
++					log.Printf("天龙>> ServerTransfer MarkRevertDelivered(server=%d transfer=%d) failed: %v", t.ServerID, t.ID, err)
+ 				}
+ 			}
+ 			return t.ServerID, nil
+diff --git a/service/rpc/geoip_rpc.go b/service/rpc/geoip_rpc.go
+index 4f12226..0084f90 100644
+--- a/service/rpc/geoip_rpc.go
++++ b/service/rpc/geoip_rpc.go
+@@ -32,7 +32,7 @@ func (s *NezhaHandler) ReportGeoIP(ctx context.Context, report *pb.GeoIP) (*pb.G
+ 	}
+ 	if server.EnableDDNS && joinedIP != "" && (server.GeoIP == nil || server.GeoIP.IP != geoIP.IP) {
+ 		if err := singleton.ServerShared.UpdateDDNS(server, &model.IP{IPv4Addr: geoIP.IP.IPv4Addr, IPv6Addr: geoIP.IP.IPv6Addr}); err != nil {
+-			log.Printf("NEZHA>> Failed to update DDNS for server %d: %v", server.ID, err)
++			log.Printf("天龙>> Failed to update DDNS for server %d: %v", server.ID, err)
+ 		}
+ 	}
+ 	if server.GeoIP != nil && singleton.Conf.EnableIPChangeNotification &&
+@@ -49,7 +49,7 @@ func (s *NezhaHandler) ReportGeoIP(ctx context.Context, report *pb.GeoIP) (*pb.G
+ 	}
+ 	location, err := geoipx.Lookup(net.ParseIP(ip))
+ 	if err != nil {
+-		log.Printf("NEZHA>> geoip.Lookup: %v", err)
++		log.Printf("天龙>> geoip.Lookup: %v", err)
+ 	}
+ 	geoIP.CountryCode = location
+ 	server.GeoIP = &geoIP
+diff --git a/service/rpc/io_stream_rpc.go b/service/rpc/io_stream_rpc.go
+index 3d878fb..440eee1 100644
+--- a/service/rpc/io_stream_rpc.go
++++ b/service/rpc/io_stream_rpc.go
+@@ -42,7 +42,7 @@ func (s *NezhaHandler) IOStream(stream pb.NezhaService_IOStreamServer) error {
+ 				return
+ 			case <-ticker.C:
+ 				if err := wrapper.SendKeepalive(); err != nil {
+-					log.Printf("NEZHA>> IOStream keepAlive error: %v\n", err)
++					log.Printf("天龙>> IOStream keepAlive error: %v\n", err)
+ 					return
+ 				}
+ 			}
+diff --git a/service/rpc/mcp_rpc.go b/service/rpc/mcp_rpc.go
+index b233266..39c130c 100644
+--- a/service/rpc/mcp_rpc.go
++++ b/service/rpc/mcp_rpc.go
+@@ -362,7 +362,7 @@ func deliverMCPResultFromReporter(res *pb.TaskResult, reporterID uint64) {
+ 		return
+ 	}
+ 	if reporterID == 0 || entry.serverID != reporterID {
+-		log.Printf("NEZHA>> MCP result ignored: taskID=%d targetServerID=%d reporterID=%d",
++		log.Printf("天龙>> MCP result ignored: taskID=%d targetServerID=%d reporterID=%d",
+ 			res.GetId(), entry.serverID, reporterID)
+ 		return
+ 	}
+diff --git a/service/rpc/nezha.go b/service/rpc/nezha.go
+index e332aa7..015a9c4 100644
+--- a/service/rpc/nezha.go
++++ b/service/rpc/nezha.go
+@@ -14,6 +14,7 @@ import (
+ 	"github.com/nezhahq/nezha/model"
+ 	pb "github.com/nezhahq/nezha/proto"
+ 	"github.com/nezhahq/nezha/service/singleton"
++	"github.com/nezhahq/nezha/service/tianlong"
+ )
+ 
+ var _ pb.NezhaServiceServer = (*NezhaHandler)(nil)
+@@ -119,7 +120,7 @@ func (s *NezhaHandler) RequestTask(stream pb.NezhaService_RequestTaskServer) err
+ 	for {
+ 		result, err = stream.Recv()
+ 		if err != nil {
+-			log.Printf("NEZHA>> RequestTask error: %v, clientID: %d\n", err, clientID)
++			log.Printf("天龙>> RequestTask error: %v, clientID: %d\n", err, clientID)
+ 			return err
+ 		}
+ 		server, err = currentRequestTaskServer(clientID, stream)
+@@ -128,6 +129,10 @@ func (s *NezhaHandler) RequestTask(stream pb.NezhaService_RequestTaskServer) err
+ 		}
+ 		switch result.GetType() {
+ 		case model.TaskTypeCommand:
++			// 天龙面板：SSH 探测任务结果优先拦截
++			if tianlong.HandleProbeResult(result.GetId(), result.GetData(), result.GetSuccessful()) {
++				continue
++			}
+ 			// 处理上报的计划任务
+ 			cr, _ := singleton.CronShared.Get(result.GetId())
+ 			// 任务结果 ID 来自 agent，必须确认该 cron 本应派发给当前 reporter。
+@@ -168,14 +173,14 @@ func (s *NezhaHandler) RequestTask(stream pb.NezhaService_RequestTaskServer) err
+ 			}
+ 			pending, ok := singleton.ServerTransferShared.LookupPending(clientID)
+ 			if !ok || pending.ID != result.GetId() {
+-				log.Printf("NEZHA>> ServerTransferApply result ignored: clientID=%d reported transferID=%d but no matching pending transfer", clientID, result.GetId())
++				log.Printf("天龙>> ServerTransferApply result ignored: clientID=%d reported transferID=%d but no matching pending transfer", clientID, result.GetId())
+ 				continue
+ 			}
+ 			if result.GetSuccessful() {
+ 				continue
+ 			}
+ 			if _, err := singleton.ServerTransferShared.MarkFailed(result.GetId(), result.GetData()); err != nil {
+-				log.Printf("NEZHA>> ServerTransfer MarkFailed(%d) failed: %v", result.GetId(), err)
++				log.Printf("天龙>> ServerTransfer MarkFailed(%d) failed: %v", result.GetId(), err)
+ 			}
+ 		default:
+ 			if model.IsMCPRPCResult(result.GetType()) {
+@@ -208,7 +213,7 @@ func (s *NezhaHandler) ReportSystemState(stream pb.NezhaService_ReportSystemStat
+ 	for {
+ 		state, err = stream.Recv()
+ 		if err != nil {
+-			log.Printf("NEZHA>> ReportSystemState error: %v, clientID: %d\n", err, clientID)
++			log.Printf("天龙>> ReportSystemState error: %v, clientID: %d\n", err, clientID)
+ 			return err
+ 		}
+ 		stateCount++
+@@ -250,7 +255,7 @@ func (s *NezhaHandler) ReportSystemState(stream pb.NezhaService_ReportSystemStat
+ 					Uptime:         innerState.Uptime,
+ 					GPU:            maxGPU,
+ 				}); err != nil {
+-					log.Printf("NEZHA>> Failed to write server metrics to TSDB: %v", err)
++					log.Printf("天龙>> Failed to write server metrics to TSDB: %v", err)
+ 				}
+ 			}
+ 			return nil
+diff --git a/service/singleton/alertsentinel.go b/service/singleton/alertsentinel.go
+index 838f936..a1cc5ef 100644
+--- a/service/singleton/alertsentinel.go
++++ b/service/singleton/alertsentinel.go
+@@ -189,14 +189,14 @@ func AlertSentinelStart() {
+ 	}
+ 	for _, alert := range Alerts {
+ 		if alert == nil {
+-			log.Printf("NEZHA>> Skipping invalid nil alert rule loaded from database")
++			log.Printf("天龙>> Skipping invalid nil alert rule loaded from database")
+ 			continue
+ 		}
+ 		alertsStore[alert.ID] = make(map[uint64][]model.TimedAlertPoint)
+ 		alertsPrevState[alert.ID] = make(map[uint64]uint8)
+ 		alertsLastMetricSeq[alert.ID] = make(map[uint64]uint64)
+ 		if !alert.IsSafeToEvaluate() {
+-			log.Printf("NEZHA>> Skipping invalid alert rule %d loaded from database", alert.ID)
++			log.Printf("天龙>> Skipping invalid alert rule %d loaded from database", alert.ID)
+ 			continue
+ 		}
+ 		addCycleTransferStatsInfo(alert)
+@@ -212,7 +212,7 @@ func AlertSentinelStart() {
+ 		checkCount++
+ 		if lastPrint.Before(startedAt.Add(-1 * time.Hour)) {
+ 			if Conf.Debug {
+-				log.Printf("NEZHA>> Checking alert rules %d times each hour %v %v", checkCount, startedAt, time.Now())
++				log.Printf("天龙>> Checking alert rules %d times each hour %v %v", checkCount, startedAt, time.Now())
+ 			}
+ 			checkCount = 0
+ 			lastPrint = startedAt
+@@ -299,7 +299,7 @@ func checkStatus() {
+ func checkStatusForServer(alert *model.AlertRule, server *model.Server) {
+ 	defer func() {
+ 		if recovered := recover(); recovered != nil {
+-			log.Printf("NEZHA>> Recovered panic evaluating alert rule %d for server %d: %v", alert.ID, server.ID, recovered)
++			log.Printf("天龙>> Recovered panic evaluating alert rule %d for server %d: %v", alert.ID, server.ID, recovered)
+ 		}
+ 	}()
+ 
+diff --git a/service/singleton/config.go b/service/singleton/config.go
+index 65f1968..30d6428 100644
+--- a/service/singleton/config.go
++++ b/service/singleton/config.go
+@@ -32,7 +32,7 @@ func InitConfigFromPath(path string) error {
+ 		return err
+ 	}
+ 	if rotated {
+-		log.Printf("NEZHA>> Rotated jwt_secret_key for dashboard version %s", Version)
++		log.Printf("天龙>> Rotated jwt_secret_key for dashboard version %s", Version)
+ 	}
+ 
+ 	Conf.updateIgnoredIPNotificationID()
+diff --git a/service/singleton/ddns.go b/service/singleton/ddns.go
+index f44d136..52f784a 100644
+--- a/service/singleton/ddns.go
++++ b/service/singleton/ddns.go
+@@ -78,7 +78,7 @@ func (c *DDNSClass) GetDDNSProvidersFromProfiles(profileId []uint64, ip *model.I
+ 			if profile.UserID != ownerUID && !profileOwnedByRealAdmin(profile.UserID) {
+ 				// Fail-closed skip: an admin may bind a member-owned profile,
+ 				// but worker-time only runs same-owner or real-admin profiles.
+-				log.Printf("NEZHA>> Skipping DDNS profile %d (owner %d) for server owner %d: not owned by server owner or a real admin", profile.ID, profile.UserID, ownerUID)
++				log.Printf("天龙>> Skipping DDNS profile %d (owner %d) for server owner %d: not owned by server owner or a real admin", profile.ID, profile.UserID, ownerUID)
+ 				continue
+ 			}
+ 			profiles = append(profiles, profile)
+diff --git a/service/singleton/i18n.go b/service/singleton/i18n.go
+index 7cff74f..d8858a6 100644
+--- a/service/singleton/i18n.go
++++ b/service/singleton/i18n.go
+@@ -13,7 +13,7 @@ var Localizer *i18n.Localizer
+ 
+ func initI18n() {
+ 	if err := loadTranslation(); err != nil {
+-		log.Printf("NEZHA>> init i18n failed: %v", err)
++		log.Printf("天龙>> init i18n failed: %v", err)
+ 	}
+ }
+ 
+diff --git a/service/singleton/jwt_session.go b/service/singleton/jwt_session.go
+index b33f5cd..6055d60 100644
+--- a/service/singleton/jwt_session.go
++++ b/service/singleton/jwt_session.go
+@@ -30,13 +30,13 @@ func RunJWTSessionGC() {
+ 	if err := DB.
+ 		Where("expires_at < ?", now.Add(-JWTSessionExpiredGrace)).
+ 		Delete(&model.JWTSession{}).Error; err != nil {
+-		log.Printf("NEZHA>> JWTSession GC delete expired failed: %v", err)
++		log.Printf("天龙>> JWTSession GC delete expired failed: %v", err)
+ 	}
+ 
+ 	if err := DB.
+ 		Where("revoked_at IS NOT NULL AND revoked_at < ?", now.Add(-JWTSessionRevokedRetention)).
+ 		Delete(&model.JWTSession{}).Error; err != nil {
+-		log.Printf("NEZHA>> JWTSession GC delete revoked failed: %v", err)
++		log.Printf("天龙>> JWTSession GC delete revoked failed: %v", err)
+ 	}
+ }
+ 
+diff --git a/service/singleton/notification.go b/service/singleton/notification.go
+index a5a53bf..0402482 100644
+--- a/service/singleton/notification.go
++++ b/service/singleton/notification.go
+@@ -456,7 +456,7 @@ func (c *NotificationClass) SendNotification(notificationGroupID uint64, desc st
+ 	c.listMu.RUnlock()
+ 
+ 	if len(notifications) == 0 {
+-		log.Printf("NEZHA>> Notification group %d has no recipients", notificationGroupID)
++		log.Printf("天龙>> Notification group %d has no recipients", notificationGroupID)
+ 		return false
+ 	}
+ 	allDelivered := true
+@@ -497,7 +497,7 @@ func (c *NotificationClass) sendRecipient(n *model.Notification, desc, fullMuteL
+ 			}
+ 		}
+ 	}
+-	log.Printf("NEZHA>> Try to notify %s", n.Name)
++	log.Printf("天龙>> Try to notify %s", n.Name)
+ 	var err error
+ 	if c.sendForTest != nil {
+ 		err = c.sendForTest(n, desc, server)
+@@ -507,10 +507,10 @@ func (c *NotificationClass) sendRecipient(n *model.Notification, desc, fullMuteL
+ 	if err != nil {
+ 		// Webhook errors can contain a credential-bearing request URL. Keep
+ 		// failure type without ever writing the URL/token to dashboard logs.
+-		log.Printf("NEZHA>> Sending notification to %s failed (%s)", n.Name, notificationFailureSummary(err))
++		log.Printf("天龙>> Sending notification to %s failed (%s)", n.Name, notificationFailureSummary(err))
+ 		return false
+ 	}
+-	log.Printf("NEZHA>> Sending notification to %s succeeded", n.Name)
++	log.Printf("天龙>> Sending notification to %s succeeded", n.Name)
+ 	if cacheKey != "" {
+ 		if history.Duration == 0 {
+ 			history.Duration = firstNotificationDelay
+diff --git a/service/singleton/server.go b/service/singleton/server.go
+index 64ffd64..3c1c276 100644
+--- a/service/singleton/server.go
++++ b/service/singleton/server.go
+@@ -107,7 +107,7 @@ func (c *ServerClass) Update(s *model.Server, uuid string) {
+ 
+ 	if s.EnableDDNS {
+ 		if err := c.UpdateDDNS(s, nil); err != nil {
+-			log.Printf("NEZHA>> Failed to update DDNS for server %d: %v", err, s.ID)
++			log.Printf("天龙>> Failed to update DDNS for server %d: %v", err, s.ID)
+ 		}
+ 	}
+ 
+diff --git a/service/singleton/server_transfer.go b/service/singleton/server_transfer.go
+index ff3f93e..9a452de 100644
+--- a/service/singleton/server_transfer.go
++++ b/service/singleton/server_transfer.go
+@@ -235,9 +235,9 @@ func NewServerTransferClass() *ServerTransferClass {
+ 	// res.Error，schema 损坏 / 表丢失 / DB 锁等情况下 pending 会被静默
+ 	// 留空，所有进行中的 transfer 在 dashboard 重启后就丢失了 auth 容忍窗口，
+ 	// 对应 agent 会在重连时被拒绝。GORM 默认 logger 也会打这条 SQL，但混在
+-	// SQL 日志里很难被注意到；这里显式发一条 NEZHA>> 前缀让运维能立刻看到。
++	// SQL 日志里很难被注意到；这里显式发一条 天龙>> 前缀让运维能立刻看到。
+ 	if res := DB.Where("status = ?", model.ServerTransferStatusPending).Find(&pending); res.Error != nil {
+-		log.Printf("NEZHA>> ServerTransferClass: failed to load pending transfers from DB: %v", res.Error)
++		log.Printf("天龙>> ServerTransferClass: failed to load pending transfers from DB: %v", res.Error)
+ 	}
+ 	for i := range pending {
+ 		t := pending[i]
+@@ -247,7 +247,7 @@ func NewServerTransferClass() *ServerTransferClass {
+ 		// timeout sweeper from looping forever on a row whose server
+ 		// row no longer exists.
+ 		if server, ok := ServerShared.Get(t.ServerID); !ok || server == nil {
+-			log.Printf("NEZHA>> ServerTransferClass: dropping pending transfer %d for missing server %d", t.ID, t.ServerID)
++			log.Printf("天龙>> ServerTransferClass: dropping pending transfer %d for missing server %d", t.ID, t.ServerID)
+ 			continue
+ 		}
+ 		c.pending[t.ServerID] = &t
+@@ -275,7 +275,7 @@ func NewServerTransferClass() *ServerTransferClass {
+ 		}, time.Now().Add(-defaultRevertDeliveryRecoveryWindow)).
+ 		Order("updated_at ASC").
+ 		Find(&reverted); res.Error != nil {
+-		log.Printf("NEZHA>> ServerTransferClass: failed to load reverted transfer deliveries from DB: %v", res.Error)
++		log.Printf("天龙>> ServerTransferClass: failed to load reverted transfer deliveries from DB: %v", res.Error)
+ 	}
+ 	for i := range reverted {
+ 		t := reverted[i]
+@@ -298,7 +298,7 @@ func NewServerTransferClass() *ServerTransferClass {
+ 	if res := DB.
+ 		Where("status = ? AND acked_at IS NOT NULL", model.ServerTransferStatusVerified).
+ 		Find(&verified); res.Error != nil {
+-		log.Printf("NEZHA>> ServerTransferClass: failed to load verified transfers from DB: %v", res.Error)
++		log.Printf("天龙>> ServerTransferClass: failed to load verified transfers from DB: %v", res.Error)
+ 	}
+ 	var rollbackAcked []model.ServerTransfer
+ 	if res := DB.
+@@ -308,7 +308,7 @@ func NewServerTransferClass() *ServerTransferClass {
+ 			model.ServerTransferStatusCancelled,
+ 		}).
+ 		Find(&rollbackAcked); res.Error != nil {
+-		log.Printf("NEZHA>> ServerTransferClass: failed to load acked rollback transfers from DB: %v", res.Error)
++		log.Printf("天龙>> ServerTransferClass: failed to load acked rollback transfers from DB: %v", res.Error)
+ 	}
+ 
+ 	type credCandidate struct {
+@@ -798,7 +798,7 @@ func (c *ServerTransferClass) PushIfOnline(t *model.ServerTransfer) {
+ 
+ 	if !agentSupportsTransfer(s) {
+ 		if _, err := c.MarkFailed(t.ID, ErrAgentTooOldForTransfer.Error()); err != nil {
+-			log.Printf("NEZHA>> ServerTransfer PushIfOnline: MarkFailed for too-old agent %d failed: %v", t.ServerID, err)
++			log.Printf("天龙>> ServerTransfer PushIfOnline: MarkFailed for too-old agent %d failed: %v", t.ServerID, err)
+ 		}
+ 		return
+ 	}
+@@ -811,7 +811,7 @@ func (c *ServerTransferClass) PushIfOnline(t *model.ServerTransfer) {
+ 		// Defence against a legacy Pending row loaded from a pre-fix DB
+ 		// snapshot. Without a handshake secret we have nothing safe to send;
+ 		// the operator must cancel and re-initiate the transfer.
+-		log.Printf("NEZHA>> ServerTransfer PushIfOnline: transfer %d has empty HandshakeSecret; refusing to fall back to user-global AgentSecret", t.ID)
++		log.Printf("天龙>> ServerTransfer PushIfOnline: transfer %d has empty HandshakeSecret; refusing to fall back to user-global AgentSecret", t.ID)
+ 		return
+ 	}
+ 
+@@ -883,7 +883,7 @@ func (c *ServerTransferClass) pushRevertIfOnline(t *model.ServerTransfer) {
+ 	}
+ 
+ 	if t.RevertHandshakeSecret == "" {
+-		log.Printf("NEZHA>> ServerTransfer pushRevertIfOnline: transfer %d has empty RevertHandshakeSecret; refusing to fall back to user-global AgentSecret", t.ID)
++		log.Printf("天龙>> ServerTransfer pushRevertIfOnline: transfer %d has empty RevertHandshakeSecret; refusing to fall back to user-global AgentSecret", t.ID)
+ 		return
+ 	}
+ 
+@@ -939,7 +939,7 @@ func (c *ServerTransferClass) sendApplyConfigTask(s *model.Server, stream pb.Nez
+ 	// ClearTaskStreamIfCurrent so a reconnect mid-Send cannot wipe a newer
+ 	// published stream when Send fails on the stale one.
+ 	if err := s.SendTask(task); err != nil {
+-		log.Printf("NEZHA>> ServerTransfer ApplyConfig send failed: serverID=%d transferID=%d: %v", s.ID, task.Id, err)
++		log.Printf("天龙>> ServerTransfer ApplyConfig send failed: serverID=%d transferID=%d: %v", s.ID, task.Id, err)
+ 		s.ClearTaskStreamIfCurrent(stream)
+ 		return err
+ 	}
+@@ -1250,7 +1250,7 @@ func (c *ServerTransferClass) OnServersDeleted(serverIDs []uint64) {
+ 	for _, sid := range serverIDs {
+ 		var pending []model.ServerTransfer
+ 		if err := DB.Where("server_id = ? AND status = ?", sid, model.ServerTransferStatusPending).Find(&pending).Error; err != nil {
+-			log.Printf("NEZHA>> ServerTransfer OnServersDeleted: list pending for server %d: %v", sid, err)
++			log.Printf("天龙>> ServerTransfer OnServersDeleted: list pending for server %d: %v", sid, err)
+ 			continue
+ 		}
+ 		now := time.Now()
+@@ -1264,7 +1264,7 @@ func (c *ServerTransferClass) OnServersDeleted(serverIDs []uint64) {
+ 					"last_error": reason,
+ 				})
+ 			if res.Error != nil {
+-				log.Printf("NEZHA>> ServerTransfer OnServersDeleted: cancel transfer %d: %v", t.ID, res.Error)
++				log.Printf("天龙>> ServerTransfer OnServersDeleted: cancel transfer %d: %v", t.ID, res.Error)
+ 				continue
+ 			}
+ 			if res.RowsAffected == 0 {
+@@ -1329,7 +1329,7 @@ func (c *ServerTransferClass) OnUsersDeleted(userIDs []uint64) {
+ 	var pending []model.ServerTransfer
+ 	if err := DB.Where("status = ? AND (from_user_id IN ? OR to_user_id IN ?)",
+ 		model.ServerTransferStatusPending, userIDs, userIDs).Find(&pending).Error; err != nil {
+-		log.Printf("NEZHA>> ServerTransfer OnUsersDeleted: list pending for users %v: %v", userIDs, err)
++		log.Printf("天龙>> ServerTransfer OnUsersDeleted: list pending for users %v: %v", userIDs, err)
+ 		return
+ 	}
+ 	now := time.Now()
+@@ -1343,7 +1343,7 @@ func (c *ServerTransferClass) OnUsersDeleted(userIDs []uint64) {
+ 				"last_error": reason,
+ 			})
+ 		if res.Error != nil {
+-			log.Printf("NEZHA>> ServerTransfer OnUsersDeleted: cancel transfer %d: %v", t.ID, res.Error)
++			log.Printf("天龙>> ServerTransfer OnUsersDeleted: cancel transfer %d: %v", t.ID, res.Error)
+ 			continue
+ 		}
+ 		if res.RowsAffected == 0 {
+diff --git a/service/singleton/servicesentinel.go b/service/singleton/servicesentinel.go
+index 3745c91..80ee212 100644
+--- a/service/singleton/servicesentinel.go
++++ b/service/singleton/servicesentinel.go
+@@ -123,7 +123,7 @@ func (ss *ServiceSentinel) flushServiceHistory(serviceID uint64, status *service
+ 			Up:        status.history.Up,
+ 			Down:      status.history.Down,
+ 		}).Error; err != nil {
+-			log.Printf("NEZHA>> Failed to save service monitor metrics: %v", err)
++			log.Printf("天龙>> Failed to save service monitor metrics: %v", err)
+ 			return
+ 		}
+ 	}
+@@ -237,7 +237,7 @@ func NewServiceSentinel(serviceSentinelDispatchBus chan<- *model.Service) (*Serv
+ 	// 每周日凌晨 4:00 执行系统存储维护
+ 	_, err = CronShared.AddFunc("0 0 4 * * 0", PerformMaintenance)
+ 	if err != nil {
+-		log.Printf("NEZHA>> Warning: failed to schedule maintenance task: %v", err)
++		log.Printf("天龙>> Warning: failed to schedule maintenance task: %v", err)
+ 	}
+ 
+ 	return ss, nil
+@@ -311,7 +311,7 @@ func (ss *ServiceSentinel) loadServiceHistory() error {
+ 			// Existing databases may contain values written before Service.Type was
+ 			// constrained. Quarantine them in the database for operator review, but
+ 			// never register a cron job that could dispatch a privileged Agent task.
+-			log.Printf("NEZHA>> quarantining service %d: %v", service.ID, err)
++			log.Printf("天龙>> quarantining service %d: %v", service.ID, err)
+ 			continue
+ 		}
+ 		task := service
+@@ -359,7 +359,7 @@ func (ss *ServiceSentinel) loadMonthlyStatusFromTSDB(services []*model.Service,
+ 	for _, service := range services {
+ 		dailyStats, err := TSDBShared.QueryServiceDailyStats(service.ID, today, 30)
+ 		if err != nil {
+-			log.Printf("NEZHA>> Failed to load TSDB history for service %d: %v", service.ID, err)
++			log.Printf("天龙>> Failed to load TSDB history for service %d: %v", service.ID, err)
+ 			continue
+ 		}
+ 		ms := ss.monthlyStatus[service.ID]
+@@ -403,7 +403,7 @@ func (ss *ServiceSentinel) loadTodayStats(today time.Time) {
+ 		for serviceID, ms := range ss.monthlyStatus {
+ 			result, err := TSDBShared.QueryServiceHistory(serviceID, tsdb.Period1Day)
+ 			if err != nil {
+-				log.Printf("NEZHA>> Failed to load TSDB today stats for service %d: %v", serviceID, err)
++				log.Printf("天龙>> Failed to load TSDB today stats for service %d: %v", serviceID, err)
+ 				continue
+ 			}
+ 			var totalUp, totalDown uint64
+@@ -666,7 +666,7 @@ func (ss *ServiceSentinel) worker() {
+ 		func() {
+ 			defer func() {
+ 				if recovered := recover(); recovered != nil {
+-					log.Printf("NEZHA>> Service monitor report processing panicked: %v", recovered)
++					log.Printf("天龙>> Service monitor report processing panicked: %v", recovered)
+ 				}
+ 			}()
+ 			ss.processReport(r, serverShared)
+@@ -682,7 +682,7 @@ func (ss *ServiceSentinel) processReport(r ReportData, serverShared *ServerClass
+ 	reporter, _ := serverShared.Get(r.Reporter)
+ 	// 入站结果必须匹配出站任务派发边界，避免 agent 伪造其他服务 ID 写入监控状态。
+ 	if !canReportServiceResult(cs, reporter, r.Data.GetType()) {
+-		log.Printf("NEZHA>> Incorrect service monitor report %+v", r)
++		log.Printf("天龙>> Incorrect service monitor report %+v", r)
+ 		return
+ 	}
+ 	if ss.serviceReportValidatedHook != nil {
+@@ -728,7 +728,7 @@ func (ss *ServiceSentinel) processReport(r ReportData, serverShared *ServerClass
+ 					Delay:      ts.ping,
+ 					Successful: ts.successCount*2 >= ts.count,
+ 				}); err != nil {
+-					log.Printf("NEZHA>> Failed to save service monitor metrics to TSDB: %v", err)
++					log.Printf("天龙>> Failed to save service monitor metrics to TSDB: %v", err)
+ 				}
+ 			} else {
+ 				if err := DB.Create(&model.ServiceHistory{
+@@ -737,7 +737,7 @@ func (ss *ServiceSentinel) processReport(r ReportData, serverShared *ServerClass
+ 					Data:      mh.Data,
+ 					ServerID:  r.Reporter,
+ 				}).Error; err != nil {
+-					log.Printf("NEZHA>> Failed to save service monitor metrics: %v", err)
++					log.Printf("天龙>> Failed to save service monitor metrics: %v", err)
+ 				}
+ 			}
+ 			ts.count = 0
+@@ -754,7 +754,7 @@ func (ss *ServiceSentinel) processReport(r ReportData, serverShared *ServerClass
+ 				Delay:      float64(mh.Delay),
+ 				Successful: mh.Successful,
+ 			}); err != nil {
+-				log.Printf("NEZHA>> Failed to save service monitor metrics to TSDB: %v", err)
++				log.Printf("天龙>> Failed to save service monitor metrics to TSDB: %v", err)
+ 			}
+ 		}
+ 	}
+@@ -839,7 +839,7 @@ func (ss *ServiceSentinel) processReport(r ReportData, serverShared *ServerClass
+ 				enableNotify := cs.Notify
+ 				expiresNew, newErr := time.Parse("2006-01-02 15:04:05 -0700 MST", newCert[1])
+ 				if newErr != nil {
+-					log.Printf("NEZHA>> Ignoring malformed TLS certificate expiry for service %d", mh.GetId())
++					log.Printf("天龙>> Ignoring malformed TLS certificate expiry for service %d", mh.GetId())
+ 					return
+ 				}
+ 
+@@ -852,7 +852,7 @@ func (ss *ServiceSentinel) processReport(r ReportData, serverShared *ServerClass
+ 				isCertChanged := false
+ 				expiresOld, oldErr := time.Parse("2006-01-02 15:04:05 -0700 MST", oldCert[1])
+ 				if oldErr != nil {
+-					log.Printf("NEZHA>> Ignoring malformed TLS certificate expiry for service %d", mh.GetId())
++					log.Printf("天龙>> Ignoring malformed TLS certificate expiry for service %d", mh.GetId())
+ 					return
+ 				}
+ 
+diff --git a/service/singleton/singleton.go b/service/singleton/singleton.go
+index 8d41b70..604e6e9 100644
+--- a/service/singleton/singleton.go
++++ b/service/singleton/singleton.go
+@@ -103,9 +103,9 @@ func InitDBFromPath(path string) error {
+ 	// 静默扩到 REST nezha:server:write。统一命名后这里把残留旧 scope 一次性
+ 	// 归一化（或在仅剩危险旧 scope 时整张 PAT 删除），保证运行时不再依赖别名。
+ 	if rewritten, deleted, mErr := model.MigrateLegacyMCPScopes(DB); mErr != nil {
+-		log.Printf("NEZHA>> MigrateLegacyMCPScopes failed: %v", mErr)
++		log.Printf("天龙>> MigrateLegacyMCPScopes failed: %v", mErr)
+ 	} else if rewritten > 0 || deleted > 0 {
+-		log.Printf("NEZHA>> Migrated legacy mcp:* api token scopes: rewritten=%d deleted=%d", rewritten, deleted)
++		log.Printf("天龙>> Migrated legacy mcp:* api token scopes: rewritten=%d deleted=%d", rewritten, deleted)
+ 	}
+ 
+ 	return nil
+@@ -141,7 +141,7 @@ func RecordTransferHourlyUsage(servers ...*model.Server) {
+ 	if len(txs) == 0 {
+ 		return
+ 	}
+-	log.Printf("NEZHA>> Saved traffic metrics to database. Affected %d row(s), Error: %v", len(txs), DB.Create(txs).Error)
++	log.Printf("天龙>> Saved traffic metrics to database. Affected %d row(s), Error: %v", len(txs), DB.Create(txs).Error)
+ }
+ 
+ func PersistTransfer(transfer model.Transfer) error {
+@@ -161,7 +161,7 @@ func CleanMonitorHistory() {
+ 	var specialServerIDs []uint64
+ 	var alerts []model.AlertRule
+ 	if err := DB.Find(&alerts).Error; err != nil {
+-		log.Printf("NEZHA>> Failed to load alert rules while cleaning transfer history: %v", err)
++		log.Printf("天龙>> Failed to load alert rules while cleaning transfer history: %v", err)
+ 		return
+ 	}
+ 	for _, alert := range alerts {
+@@ -208,15 +208,15 @@ func CleanMonitorHistory() {
+ 
+ // PerformMaintenance 执行系统维护（SQLite VACUUM 和 TSDB 维护）
+ func PerformMaintenance() {
+-	log.Println("NEZHA>> Starting system maintenance...")
++	log.Println("天龙>> Starting system maintenance...")
+ 
+ 	// 1. SQLite 维护
+ 	if DB != nil {
+-		log.Println("NEZHA>> SQLite: Starting VACUUM...")
++		log.Println("天龙>> SQLite: Starting VACUUM...")
+ 		if err := DB.Exec("VACUUM").Error; err != nil {
+-			log.Printf("NEZHA>> SQLite: VACUUM failed: %v", err)
++			log.Printf("天龙>> SQLite: VACUUM failed: %v", err)
+ 		} else {
+-			log.Println("NEZHA>> SQLite: VACUUM completed")
++			log.Println("天龙>> SQLite: VACUUM completed")
+ 		}
+ 	}
+ 
+@@ -225,7 +225,7 @@ func PerformMaintenance() {
+ 		TSDBShared.Maintenance()
+ 	}
+ 
+-	log.Println("NEZHA>> System maintenance completed")
++	log.Println("天龙>> System maintenance completed")
+ }
+ 
+ // IPDesensitize 根据设置选择是否对IP进行打码处理 返回处理后的IP(关闭打码则返回原IP)
+diff --git a/service/singleton/tsdb.go b/service/singleton/tsdb.go
+index e5311bb..03d1f60 100644
+--- a/service/singleton/tsdb.go
++++ b/service/singleton/tsdb.go
+@@ -40,7 +40,7 @@ func InitTSDB() error {
+ 	}
+ 
+ 	if !config.Enabled() {
+-		log.Println("NEZHA>> TSDB is disabled (tsdb.data_path not configured)")
++		log.Println("天龙>> TSDB is disabled (tsdb.data_path not configured)")
+ 		if DB != nil {
+ 			return DB.AutoMigrate(model.ServiceHistory{})
+ 		}
+@@ -51,10 +51,10 @@ func InitTSDB() error {
+ 	db, err := openTSDB(config)
+ 	if err != nil {
+ 		if errors.Is(err, tsdb.ErrDiskFull) {
+-			log.Printf("NEZHA>> Warning: TSDB is unavailable because its disk is full; dashboard and alerts will continue without TSDB writes: %v", err)
++			log.Printf("天龙>> Warning: TSDB is unavailable because its disk is full; dashboard and alerts will continue without TSDB writes: %v", err)
+ 			if DB != nil {
+ 				if migrateErr := DB.AutoMigrate(model.ServiceHistory{}); migrateErr != nil {
+-					log.Printf("NEZHA>> Warning: failed to prepare SQLite service history fallback: %v", migrateErr)
++					log.Printf("天龙>> Warning: failed to prepare SQLite service history fallback: %v", migrateErr)
+ 				}
+ 			}
+ 			return nil
+@@ -63,12 +63,12 @@ func InitTSDB() error {
+ 	}
+ 	TSDBShared = db
+ 
+-	log.Println("NEZHA>> TSDB initialized successfully")
++	log.Println("天龙>> TSDB initialized successfully")
+ 
+ 	if DB != nil && DB.Migrator().HasTable("service_histories") {
+-		log.Println("NEZHA>> Dropping legacy service_histories table (TSDB is now enabled). Historical data will NOT be migrated.")
++		log.Println("天龙>> Dropping legacy service_histories table (TSDB is now enabled). Historical data will NOT be migrated.")
+ 		if err := DB.Migrator().DropTable("service_histories"); err != nil {
+-			log.Printf("NEZHA>> Warning: failed to drop service_histories table: %v", err)
++			log.Printf("天龙>> Warning: failed to drop service_histories table: %v", err)
+ 		}
+ 	}
+ 
