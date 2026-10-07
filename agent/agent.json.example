@@ -1,1 +1,0 @@
-{"interval":10,"name":"web-01","secret":"和服务端 server.json 里一致的密钥","server":"http://你的面板IP:8009"}
