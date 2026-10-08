@@ -9,6 +9,7 @@ import secrets
 import socket
 import subprocess
 import time
+import uuid as _uuid
 
 from db import DATA_DIR, _conn, new_id, row_to_dict
 from singbox import generate_reality_keypair
@@ -24,10 +25,9 @@ def _is_uuid_proto(proto: str) -> bool:
 
 
 def gen_credential(protocol: str, method: str = "") -> str:
-    """按协议生成合法凭证"""
+    """按协议生成合法凭证（UUID 用 Python 生成，不依赖 sing-box 二进制）"""
     if _is_uuid_proto(protocol):
-        from singbox import generate_uuid
-        return generate_uuid()
+        return str(_uuid.uuid4())
     if protocol == "shadowsocks" and method == "2022-blake3-aes-256-gcm":
         return base64.b64encode(secrets.token_bytes(32)).decode()
     if protocol == "shadowsocks" and method == "2022-blake3-aes-128-gcm":

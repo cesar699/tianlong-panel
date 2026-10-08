@@ -1,114 +1,103 @@
-"""sing-box 进程控制：start/stop/restart/status/logs"""
-import os
-import signal
+"""sing-box 进程控制（外部接管模式）：全部走 systemctl / journalctl。
+
+systemctl 与 journalctl 调用分别封装为 _systemctl() / _journalctl()，
+便于单元测试 mock（沙箱无 systemd）。
+"""
 import subprocess
 import time
 
-from db import DATA_DIR
-from config_mgr import CONFIG_PATH, LOG_PATH, check_config, write_config
-from singbox import bin_path, ensure_binary
-
-PID_PATH = os.path.join(DATA_DIR, "sing-box.pid")
+from singbox import effective_service
 
 
-def _pid() -> int:
-    try:
-        with open(PID_PATH) as f:
-            pid = int(f.read().strip())
-        os.kill(pid, 0)
-        return pid
-    except Exception:
-        return 0
+def _run_cmd(argv: list) -> subprocess.CompletedProcess:
+    """唯一外部命令执行点（mock 点：单测替换此函数验证命令拼装）"""
+    return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+
+
+def _systemctl(*args) -> subprocess.CompletedProcess:
+    return _run_cmd(["systemctl", *args, effective_service()])
+
+
+def _journalctl(lines: int) -> subprocess.CompletedProcess:
+    return _run_cmd(["journalctl", "-u", effective_service(),
+                     "-n", str(lines), "--no-pager"])
+
+
+_run_cache = {"ts": 0, "val": False}
+_CACHE_TTL = 5
 
 
 def is_running() -> bool:
-    return _pid() > 0
+    now = time.time()
+    if now - _run_cache["ts"] < _CACHE_TTL:
+        return _run_cache["val"]
+    try:
+        val = _systemctl("is-active").stdout.strip() == "active"
+    except Exception:
+        val = False
+    _run_cache.update(ts=now, val=val)
+    return val
 
 
 def uptime() -> int:
-    pid = _pid()
-    if not pid:
-        return 0
+    """systemctl show 取单调时钟启动时间戳"""
     try:
-        # /proc/pid 出生时间推算
-        stat = os.stat(f"/proc/{pid}")
-        return int(time.time() - stat.st_ctime)
+        out = _systemctl("show", "-p", "ActiveEnterTimestampMonotonic", "--value").stdout.strip()
+        us = int(out)
+        if us > 0:
+            return max(int(time.monotonic() - us / 1_000_000), 0)
     except Exception:
-        return 0
+        pass
+    return 0
+
+
+def _do(action: str) -> tuple:
+    try:
+        p = _systemctl(action)
+    except FileNotFoundError:
+        return False, "系统无 systemctl（容器内请直接在宿主机操作，或裸机部署面板）"
+    except Exception as e:
+        return False, f"systemctl 调用失败: {e}"
+    if p.returncode == 0:
+        return True, f"systemctl {action} {effective_service()} 成功"
+    err = (p.stderr or p.stdout).strip()[-300:]
+    return False, f"systemctl {action} 失败: {err or '未知错误'}"
 
 
 def start() -> tuple:
     if is_running():
         return True, "sing-box 已在运行"
-    ensure_binary()
-    ok, msg = write_config()
-    if not ok:
-        return False, f"配置校验失败，拒绝启动: {msg}"
-    os.makedirs(DATA_DIR, exist_ok=True)
-    logf = open(LOG_PATH, "a")
-    p = subprocess.Popen([bin_path(), "run", "-c", CONFIG_PATH],
-                         stdout=logf, stderr=subprocess.STDOUT,
-                         start_new_session=True)
-    with open(PID_PATH, "w") as f:
-        f.write(str(p.pid))
-    time.sleep(1)
-    if is_running():
-        return True, "sing-box 启动成功"
-    return False, "启动失败，请查看日志"
+    return _do("start")
 
 
 def stop() -> tuple:
-    pid = _pid()
-    if not pid:
+    if not is_running():
         return True, "sing-box 未运行"
-    try:
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(20):
-            time.sleep(0.25)
-            if not is_running():
-                break
-        else:
-            os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        os.remove(PID_PATH)
-    except OSError:
-        pass
-    return True, "sing-box 已停止"
+    return _do("stop")
 
 
 def restart() -> tuple:
-    stop()
-    time.sleep(1)
-    return start()
+    return _do("restart")
 
 
 def reload_config() -> tuple:
-    """重写配置并校验，通过则重启生效"""
+    """重写配置并校验，通过则重启服务生效"""
+    from config_mgr import write_config
     ok, msg = write_config()
     if not ok:
         return False, f"配置校验失败: {msg}"
     if is_running():
         return restart()
-    return True, "配置已保存（sing-box 未运行）"
+    return True, "配置已保存（服务未运行，启动后生效）"
 
 
 def tail_logs(lines: int = 100) -> str:
-    if not os.path.isfile(LOG_PATH):
-        return ""
-    with open(LOG_PATH, "rb") as f:
-        # 从尾部读取，避免大文件全量加载
-        f.seek(0, os.SEEK_END)
-        size = f.tell()
-        block = 4096
-        data = b""
-        while len(data.split(b"\n")) <= lines + 1 and size > 0:
-            step = min(block, size)
-            size -= step
-            f.seek(size)
-            data = f.read(step) + data
-            if size == 0:
-                break
-    text = data.decode("utf-8", errors="replace")
-    return "\n".join(text.split("\n")[-lines:])
+    try:
+        p = _journalctl(lines)
+    except FileNotFoundError:
+        return "系统无 journalctl（容器内请在宿主机执行 journalctl -u sing-box）"
+    except Exception as e:
+        return f"读取日志失败: {e}"
+    if p.returncode != 0:
+        return (p.stderr or p.stdout).strip()[-500:] or "无日志"
+    return p.stdout.strip()[-20000:]

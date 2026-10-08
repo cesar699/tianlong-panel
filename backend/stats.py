@@ -8,8 +8,9 @@ import json
 import socket
 import threading
 import time
+from datetime import datetime, timezone
 
-from db import _conn, get_setting
+from db import _conn, get_setting, record_traffic_minute
 
 CLASH_PORT = 19090
 HISTORY_LEN = 60
@@ -71,6 +72,59 @@ def _traffic_sse(timeout: int = 3):
     finally:
         s.close()
     return None
+
+
+def _api_delete(path: str, timeout: int = 5) -> bool:
+    s = socket.create_connection(("127.0.0.1", CLASH_PORT), timeout=timeout)
+    try:
+        s.sendall(f"DELETE {path} HTTP/1.0\r\nAuthorization: Bearer {_secret()}\r\n\r\n".encode())
+        s.settimeout(timeout)
+        data = s.recv(4096).decode(errors="replace")
+        return " 200 " in data.split("\r\n", 1)[0]
+    finally:
+        s.close()
+
+
+def list_connections() -> list:
+    """当前活跃连接：客户端IP、目标、协议/入站、上下行、时长"""
+    try:
+        conns = _api_get("/connections").get("connections", [])
+    except Exception:
+        return []
+    now = time.time()
+    out = []
+    for co in conns:
+        md = co.get("metadata") or {}
+        mtype = md.get("type", "")
+        proto, _, tag = mtype.partition("/")
+        dst_host = md.get("host") or ""
+        dst_ip = md.get("destinationIP") or ""
+        dst_port = md.get("destinationPort") or ""
+        dst = f"{dst_host or dst_ip}:{dst_port}" if (dst_host or dst_ip) else ""
+        try:
+            start = datetime.fromisoformat(co.get("start", "").replace("Z", "+00:00")).timestamp()
+            dur = max(int(now - start), 0)
+        except Exception:
+            dur = 0
+        out.append({
+            "id": co.get("id"),
+            "src": f"{md.get('sourceIP', '')}:{md.get('sourcePort', '')}",
+            "dst": dst,
+            "protocol": proto,
+            "inbound": tag,
+            "up": int(co.get("upload", 0)),
+            "down": int(co.get("download", 0)),
+            "duration": dur,
+        })
+    out.sort(key=lambda x: x["down"] + x["up"], reverse=True)
+    return out
+
+
+def close_connection(conn_id) -> bool:
+    try:
+        return _api_delete(f"/connections/{conn_id}")
+    except Exception:
+        return False
 
 
 def _tag_to_inbound_id() -> dict:
@@ -193,15 +247,58 @@ def _loop():
 
 
 _started = False
+_hist_prev = {"ts_min": 0, "inbounds": {}, "total_up": 0, "total_down": 0}
+
+
+def _history_loop():
+    """每分钟把累计流量差值写入 traffic_history"""
+    global _hist_prev
+    while True:
+        try:
+            time.sleep(60 - time.time() % 60 + 1)
+            ts_min = int(time.time()) // 60 * 60
+            totals = inbound_traffic_totals()  # 累计值
+            with _lock:
+                t_up, t_down = _last_totals.get("up", 0), _last_totals.get("down", 0)
+            prev = _hist_prev
+            if prev["ts_min"]:
+                rows = []
+                for ib_id, t in totals.items():
+                    pu, pd = prev["inbounds"].get(ib_id, (0, 0))
+                    cu, cd = t["up"], t["down"]
+                    du = cu - pu if cu >= pu else cu
+                    dd = cd - pd if cd >= pd else cd
+                    if du or dd:
+                        rows.append((ib_id, max(du, 0), max(dd, 0)))
+                # 总量（含非入站流量）单独记一条 __total__
+                tu = t_up - prev["total_up"] if t_up >= prev["total_up"] else t_up
+                td = t_down - prev["total_down"] if t_down >= prev["total_down"] else t_down
+                rows.append(("__total__", max(tu, 0), max(td, 0)))
+                if rows:
+                    record_traffic_minute(ts_min, rows)
+            _hist_prev = {
+                "ts_min": ts_min,
+                "inbounds": {k: (v["up"], v["down"]) for k, v in totals.items()},
+                "total_up": t_up, "total_down": t_down,
+            }
+        except Exception:
+            pass
+
+
+_hist_started = False
 
 
 def start_poller():
-    global _started
+    global _started, _hist_started
     if _started:
         return
     _started = True
     th = threading.Thread(target=_loop, daemon=True, name="stats-poller")
     th.start()
+    if not _hist_started:
+        _hist_started = True
+        th2 = threading.Thread(target=_history_loop, daemon=True, name="stats-history")
+        th2.start()
 
 
 def reset_peak():

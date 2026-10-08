@@ -42,13 +42,33 @@ def init_db():
         down_bytes INTEGER NOT NULL DEFAULT 0,
         updated_at REAL NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS traffic_history (
+        ts INTEGER NOT NULL,
+        inbound_id TEXT NOT NULL,
+        up_bytes INTEGER NOT NULL DEFAULT 0,
+        down_bytes INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (ts, inbound_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_th_ts ON traffic_history(ts);
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts REAL NOT NULL,
+        actor TEXT NOT NULL DEFAULT 'admin',
+        action TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
     """)
     defaults = {
         "admin_password_hash": _hash("admin"),
         "password_changed": "0",
-        "singbox_version": "1.14.2",
         "public_host": "",
         "clash_api_secret": secrets.token_urlsafe(16),
+        # 外部接管模式：sing-box 安装位置（面板不安装，只接管）
+        "sb_binary": "",                                    # 空=自动探测
+        "sb_config": "/etc/sing-box/config.json",
+        "sb_service": "sing-box",
+        "takeover_done": "0",
     }
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)", (k, v))
@@ -85,6 +105,51 @@ def set_setting(key: str, value: str):
 
 def new_id() -> str:
     return secrets.token_hex(8)
+
+
+def audit_log(actor: str, action: str, detail: str = ""):
+    """面板操作审计"""
+    c = _conn()
+    c.execute("INSERT INTO audit_log(ts, actor, action, detail) VALUES(?,?,?,?)",
+              (time.time(), actor, action, detail))
+    # 只保留最近 2000 条
+    c.execute("DELETE FROM audit_log WHERE id NOT IN "
+              "(SELECT id FROM audit_log ORDER BY id DESC LIMIT 2000)")
+    c.commit()
+    c.close()
+
+
+def list_audit(limit: int = 100) -> list:
+    c = _conn()
+    rows = c.execute("SELECT ts, actor, action, detail FROM audit_log "
+                     "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    c.close()
+    return [dict(r) for r in rows]
+
+
+def record_traffic_minute(ts_min: int, rows: list):
+    """写入一分钟粒度的流量：rows=[(inbound_id, up, down)]"""
+    c = _conn()
+    c.executemany(
+        "INSERT INTO traffic_history(ts, inbound_id, up_bytes, down_bytes)"
+        " VALUES(?,?,?,?) ON CONFLICT(ts, inbound_id) DO UPDATE SET"
+        " up_bytes=up_bytes+excluded.up_bytes,"
+        " down_bytes=down_bytes+excluded.down_bytes",
+        [(ts_min, ib, up, down) for ib, up, down in rows],
+    )
+    # 只保留 35 天
+    c.execute("DELETE FROM traffic_history WHERE ts < ?", (ts_min - 35 * 86400,))
+    c.commit()
+    c.close()
+
+
+def traffic_history_range(since_ts: int) -> list:
+    c = _conn()
+    rows = c.execute(
+        "SELECT ts, inbound_id, up_bytes, down_bytes FROM traffic_history"
+        " WHERE ts >= ? ORDER BY ts", (since_ts,)).fetchall()
+    c.close()
+    return [dict(r) for r in rows]
 
 
 def row_to_dict(r) -> dict:

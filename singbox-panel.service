@@ -1,0 +1,16 @@
+[Unit]
+Description=sing-box 面板（外部接管模式）
+After=network.target sing-box.service
+Wants=sing-box.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/singbox-panel
+Environment=DATA_DIR=/opt/singbox-panel/data
+ExecStart=/usr/bin/python3 -m uvicorn main:app --app-dir /opt/singbox-panel/backend --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

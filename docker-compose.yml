@@ -10,5 +10,9 @@ services:
       # - "8388:8388/udp"
     volumes:
       - ./data:/app/data
+      # 外部接管模式：把宿主机的 sing-box 配置目录挂进容器（只读面板写配置用 :rw）
+      # 注意：容器内无 systemd，启动/停止/重启按钮不可用，请在宿主机执行 systemctl；
+      # 推荐裸机部署（见 singbox-panel.service），Docker 仅用于编辑配置+看监控。
+      # - /etc/sing-box:/etc/sing-box:rw
     environment:
       - DATA_DIR=/app/data

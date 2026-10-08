@@ -66,6 +66,22 @@
 
     <!-- ===== 监控大屏 ===== -->
     <div v-if="tab==='dash'" class="space-y-4">
+      <div v-if="dash.singbox && dash.singbox.installed===false" class="card p-4 border-red-800 bg-red-950/40">
+        <div class="font-bold text-red-400 mb-1">⚠️ 未检测到 sing-box</div>
+        <div class="text-sm text-slate-300">面板本身不安装 sing-box，请先在服务器上安装 sing-box 后再使用：</div>
+        <ul class="text-sm text-slate-400 list-disc ml-5 mt-1">
+          <li>官方 releases：<span class="mono select-all">https://github.com/SagerNet/sing-box/releases</span></li>
+          <li>或一键脚本：<span class="mono select-all">bash &lt;(curl -sL https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh)</span></li>
+        </ul>
+        <div class="text-sm text-slate-400 mt-1">装好后去「设置」→「sing-box 接管」点「探测安装」。自定义路径也可在设置里填写。</div>
+      </div>
+      <div v-if="dash.singbox && dash.singbox.installed!==false && dash.singbox.running===false" class="card p-4 border-red-800 bg-red-950/40 flex items-center justify-between">
+        <div>
+          <div class="font-bold text-red-400">🔴 sing-box 服务未运行</div>
+          <div class="text-sm text-slate-400">systemd 服务 {{ dash.singbox.service||'sing-box' }} 未处于 active 状态，节点已全部离线</div>
+        </div>
+        <button @click="sbAct('restart')" class="btn btn-red">一键重启</button>
+      </div>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div class="card p-4">
           <div class="text-slate-500 text-xs mb-1">实时下行</div>
@@ -116,6 +132,45 @@
             </div>
           </div>
           <div v-if="!dash.traffic.by_inbound.length" class="text-slate-500 text-sm col-span-3 text-center py-6">暂无入站，去「入站管理」添加</div>
+        </div>
+      </div>
+
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="font-bold">历史流量</h2>
+          <div class="flex gap-2">
+            <button @click="histRange='24h';loadHist()" class="btn !py-1 !px-2 text-xs" :class="histRange==='24h'?'btn-blue':'btn-gray'">近24小时</button>
+            <button @click="histRange='30d';loadHist()" class="btn !py-1 !px-2 text-xs" :class="histRange==='30d'?'btn-blue':'btn-gray'">近30天</button>
+          </div>
+        </div>
+        <div id="histChart" style="height:220px"></div>
+        <div class="text-xs text-slate-500 mt-1">每分钟记录一次，由面板 sqlite 持久化（保留35天）</div>
+      </div>
+
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="font-bold">实时连接 <span class="text-xs text-slate-500 font-normal">{{ conns.length }} 个</span></h2>
+          <button @click="loadConns" class="btn btn-gray !py-1 !px-2 text-xs">刷新</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs mono">
+            <thead><tr class="text-slate-500 text-left">
+              <th class="py-1 pr-2">客户端</th><th class="py-1 pr-2">目标</th><th class="py-1 pr-2">协议/入站</th>
+              <th class="py-1 pr-2 text-right">↓</th><th class="py-1 pr-2 text-right">↑</th><th class="py-1 pr-2 text-right">时长</th><th></th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="c in conns.slice(0,50)" :key="c.id" class="border-t border-slate-800">
+                <td class="py-1 pr-2">{{ c.src }}</td>
+                <td class="py-1 pr-2 max-w-[220px] truncate" :title="c.dst">{{ c.dst||'-' }}</td>
+                <td class="py-1 pr-2">{{ c.protocol }}<span class="text-slate-500">/{{ c.inbound }}</span></td>
+                <td class="py-1 pr-2 text-right text-green-400">{{ fmtBytes(c.down) }}</td>
+                <td class="py-1 pr-2 text-right text-orange-400">{{ fmtBytes(c.up) }}</td>
+                <td class="py-1 pr-2 text-right text-slate-400">{{ fmtDur(c.duration) }}</td>
+                <td class="py-1 text-right"><button @click="closeConn(c)" class="btn btn-red !py-0.5 !px-2 text-xs">断开</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="!conns.length" class="text-slate-500 text-sm text-center py-4">暂无活跃连接</div>
         </div>
       </div>
     </div>
@@ -201,6 +256,7 @@
     <div v-if="tab==='ctrl'" class="space-y-4">
       <div class="card p-4">
         <h2 class="font-bold mb-3">进程控制</h2>
+        <p class="text-xs text-slate-500 mb-3">通过 <span class="mono">systemctl</span> 控制 sing-box 系统服务；日志读取 <span class="mono">journalctl</span>。</p>
         <div class="flex gap-2 flex-wrap">
           <button @click="sbAct('start')" class="btn btn-green">启动</button>
           <button @click="sbAct('stop')" class="btn btn-red">停止</button>
@@ -225,16 +281,31 @@
     <!-- ===== 设置 ===== -->
     <div v-if="tab==='settings'" class="space-y-4">
       <div class="card p-4 max-w-lg">
+        <h2 class="font-bold mb-3">sing-box 接管</h2>
+        <p class="text-xs text-slate-500 mb-3">面板不安装 sing-box，只接管你服务器上已有的 sing-box：读写它的 config.json，改完自动备份、校验并 <span class="mono">systemctl restart</span> 生效。</p>
+        <label class="text-xs text-slate-500">sing-box 二进制路径（空=自动探测）</label>
+        <input v-model="settings.sb_binary" placeholder="如 /usr/local/bin/sing-box，空则自动探测" class="w-full mb-3 mt-1">
+        <label class="text-xs text-slate-500">配置文件路径</label>
+        <input v-model="settings.sb_config" placeholder="/etc/sing-box/config.json" class="w-full mb-3 mt-1">
+        <label class="text-xs text-slate-500">systemd 服务名</label>
+        <input v-model="settings.sb_service" placeholder="sing-box" class="w-full mb-3 mt-1">
+        <div class="flex gap-2 flex-wrap">
+          <button @click="saveSettings" class="btn btn-blue">保存</button>
+          <button @click="detectInstall" class="btn btn-gray">探测安装</button>
+          <button @click="doTakeover" class="btn btn-green">接管现有配置</button>
+        </div>
+        <div v-if="detectInfo" class="text-xs mono mt-3 p-2 bg-[#0b0f1a] rounded whitespace-pre-wrap">{{ detectInfo }}</div>
+        <div v-if="takeoverMsg" class="text-xs mt-2 whitespace-pre-wrap" :class="takeoverOk?'text-green-400':'text-red-400'">{{ takeoverMsg }}</div>
+        <p class="text-xs text-slate-500 mt-3">探针固定使用 clash api 端口 <span class="mono">19090</span>：接管后面板生成的配置会统一成这个端口（原配置会被备份）。</p>
+        <p v-if="setMsg" class="text-sm mt-2 text-green-400">{{ setMsg }}</p>
+      </div>
+      <div class="card p-4 max-w-lg">
         <h2 class="font-bold mb-3">面板设置</h2>
         <label class="text-xs text-slate-500">公网地址（用于生成订阅链接，不填则用访问 IP）</label>
         <input v-model="settings.public_host" placeholder="如 1.2.3.4 或 example.com" class="w-full mb-3 mt-1">
-        <label class="text-xs text-slate-500">sing-box 版本</label>
-        <input v-model="settings.singbox_version" class="w-full mb-3 mt-1">
         <div class="flex gap-2">
           <button @click="saveSettings" class="btn btn-blue">保存</button>
-          <button @click="dlBinary" class="btn btn-gray">重新下载 sing-box</button>
         </div>
-        <p v-if="setMsg" class="text-sm mt-2 text-green-400">{{ setMsg }}</p>
       </div>
       <div class="card p-4 max-w-lg">
         <h2 class="font-bold mb-3">修改密码</h2>
@@ -243,6 +314,31 @@
         <input v-model="pwForm.new2" type="password" placeholder="确认" class="w-full mb-3">
         <button @click="changePw(false)" class="btn btn-blue">修改</button>
         <p v-if="pwMsg" class="text-sm mt-2" :class="pwOk?'text-green-400':'text-red-400'">{{ pwMsg }}</p>
+      </div>
+    </div>
+
+    <!-- ===== 操作审计 ===== -->
+    <div v-if="tab==='audit'" class="space-y-4">
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="font-bold">操作审计 <span class="text-xs text-slate-500 font-normal">最近100条 · 保留2000条</span></h2>
+          <button @click="loadAudit" class="btn btn-gray !py-1 !px-2 text-xs">刷新</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead><tr class="text-slate-500 text-left">
+              <th class="py-1 pr-3">时间</th><th class="py-1 pr-3">操作</th><th class="py-1">详情</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="a in auditList" :key="a.ts+a.action" class="border-t border-slate-800">
+                <td class="py-1 pr-3 mono text-slate-400 whitespace-nowrap">{{ fmtTs(a.ts) }}</td>
+                <td class="py-1 pr-3 whitespace-nowrap">{{ a.action }}</td>
+                <td class="py-1 text-slate-400 break-all">{{ a.detail }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="!auditList.length" class="text-slate-500 text-sm text-center py-4">暂无记录</div>
+        </div>
       </div>
     </div>
   </div>
@@ -255,7 +351,7 @@ createApp({
     token: localStorage.getItem('sb_token') || '',
     loginPw: '', loginErr: '', mustChange: false,
     pwForm: { old:'', new1:'', new2:'' }, pwMsg: '', pwOk: false,
-    tab: 'dash', tabs: [{k:'dash',n:'📊 监控'},{k:'inbounds',n:'🔌 入站'},{k:'sub',n:'🔗 订阅'},{k:'ctrl',n:'⚙️ 控制'},{k:'settings',n:'🔧 设置'}],
+    tab: 'dash', tabs: [{k:'dash',n:'📊 监控'},{k:'inbounds',n:'🔌 入站'},{k:'sub',n:'🔗 订阅'},{k:'ctrl',n:'⚙️ 控制'},{k:'settings',n:'🔧 设置'},{k:'audit',n:'📝 审计'}],
     dash: { singbox:{running:false,version:'',uptime:0,inbound_count:0},
             speed:{up:0,down:0,up_peak:0,down_peak:0,history:[]},
             traffic:{total_up:0,total_down:0,by_inbound:[]}, hardware:{} },
@@ -264,11 +360,17 @@ createApp({
     newIb: { protocol:'shadowsocks', port:8388, tag:'', method:'aes-256-gcm' },
     subLinks: [], subUrl: '',
     logs: '', rawConfig: '', ctrlMsg: '', ctrlOk: true,
-    settings: { public_host:'', singbox_version:'' }, setMsg: '',
+    settings: { public_host:'', sb_binary:'', sb_config:'', sb_service:'' }, setMsg: '',
+    detectInfo: '', takeoverMsg: '', takeoverOk: true,
+    histRange: '24h', hist: {}, histChart: null,
+    conns: [], auditList: [],
     chart: null, timer: null,
   }},
   mounted() {
     if (this.token) this.init();
+  },
+  watch: {
+    tab(v){ if(v==='dash'){ this.$nextTick(()=>{ this.drawChart(); this.drawHist(); }); } }
   },
   methods: {
     api(path, opts={}) {
@@ -303,12 +405,15 @@ createApp({
         else { this.pwMsg='修改成功'; this.pwOk=true; this.pwForm={old:'',new1:'',new2:''}; }
       } catch(e){ first?this.loginErr=e.message:(this.pwMsg=e.message,this.pwOk=false); }
     },
-    doLogout(){ this.api('/api/logout',{method:'POST'}).catch(()=>{}); this.token=''; localStorage.removeItem('sb_token'); clearInterval(this.timer); },
+    doLogout(){ this.api('/api/logout',{method:'POST'}).catch(()=>{}); this.token=''; localStorage.removeItem('sb_token'); clearInterval(this.timer); clearInterval(this.timer2); },
     init() {
       this.refreshDash(); this.loadInbounds(); this.loadSub(); this.loadLogs(); this.loadConfig(); this.loadSettings();
+      this.loadHist(); this.loadConns(); this.loadAudit();
       this.subUrl = location.origin + '/sub';
       clearInterval(this.timer);
       this.timer = setInterval(()=>{ if(this.tab==='dash') this.refreshDash(); }, 1000);
+      clearInterval(this.timer2);
+      this.timer2 = setInterval(()=>{ if(this.tab==='dash'){ this.loadConns(); } }, 5000);
       this.$nextTick(()=>this.initChart());
     },
     async refreshDash() {
@@ -342,6 +447,50 @@ createApp({
       });
     },
     async resetPeak(){ await this.api('/api/dashboard/reset-peak',{method:'POST'}).catch(()=>{}); },
+    async loadHist(){
+      try {
+        const d = await this.api('/api/traffic/history?range='+this.histRange);
+        this.hist = d; this.drawHist();
+      } catch(e){}
+    },
+    drawHist(){
+      const el = document.getElementById('histChart');
+      if (!el || typeof echarts==='undefined' || !this.hist.labels) return;
+      if (!this.histChart) this.histChart = echarts.init(el, null, {renderer:'canvas'});
+      const isDay = this.hist.range==='30d';
+      const fmtT = t => { const d=new Date(t*1000);
+        return isDay ? (d.getMonth()+1)+'/'+d.getDate() : d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false}); };
+      const series = [
+        {name:'下行', type:isDay?'bar':'line', smooth:true, showSymbol:false,
+         data:this.hist.total_down, itemStyle:{color:'#22c55e'}, lineStyle:{color:'#22c55e',width:2},
+         areaStyle:isDay?null:{color:'rgba(34,197,94,.12)'}},
+        {name:'上行', type:isDay?'bar':'line', smooth:true, showSymbol:false,
+         data:this.hist.total_up, itemStyle:{color:'#fb923c'}, lineStyle:{color:'#fb923c',width:2},
+         areaStyle:isDay?null:{color:'rgba(251,146,60,.12)'}},
+      ];
+      this.histChart.setOption({
+        backgroundColor:'transparent',
+        grid:{left:50,right:12,top:36,bottom:24},
+        tooltip:{trigger:'axis',formatter:p=>{let s=fmtT(p[0].axisValue)+'<br/>';p.forEach(x=>{s+=x.seriesName+' '+this.fmtBytes(x.value)+'<br/>'});return s;}},
+        legend:{textStyle:{color:'#94a3b8'},top:0},
+        xAxis:{type:'category',data:this.hist.labels.map(fmtT),axisLabel:{color:'#64748b',fontSize:10}},
+        yAxis:{type:'value',axisLabel:{color:'#64748b',fontSize:10,formatter:v=>this.fmtBytes(v)}},
+        series, animation:false
+      }, true);
+    },
+    async loadConns(){
+      try { this.conns = await this.api('/api/connections'); } catch(e){}
+    },
+    async closeConn(c){
+      if(!confirm(`关闭连接 ${c.src} → ${c.dst}？`)) return;
+      await this.api('/api/connections/'+c.id,{method:'DELETE'}).catch(e=>alert(e.message));
+      this.loadConns();
+    },
+    async loadAudit(){
+      try { this.auditList = await this.api('/api/audit?limit=100'); } catch(e){}
+    },
+    fmtTs(ts){ return new Date(ts*1000).toLocaleString('zh-CN',{hour12:false}); },
+    fmtDur(s){ if(s<60) return s+'s'; if(s<3600) return Math.floor(s/60)+'m'; return Math.floor(s/3600)+'h'+Math.floor(s%3600/60)+'m'; },
     async loadInbounds(){ try{ this.inbounds = await this.api('/api/inbounds'); }catch(e){} },
     async createInbound() {
       this.ibErr='';
@@ -371,7 +520,27 @@ createApp({
     async loadConfig(){ try{ this.rawConfig=JSON.stringify(await this.api('/api/singbox/config'),null,2); }catch(e){} },
     async loadSettings(){ try{ this.settings=await this.api('/api/settings'); }catch(e){} },
     async saveSettings(){ await this.api('/api/settings',{method:'POST',body:JSON.stringify(this.settings)}); this.setMsg='已保存'; setTimeout(()=>this.setMsg='',2000); },
-    async dlBinary(){ if(!confirm('从 GitHub 下载 sing-box 二进制？'))return; const d=await this.api('/api/singbox/download',{method:'POST'}).catch(e=>alert(e.message)); if(d) alert('下载成功: '+d.version); },
+    async detectInstall(){
+      this.detectInfo='探测中…';
+      try {
+        const d = await this.api('/api/singbox/detect');
+        this.detectInfo =
+          `二进制: ${d.binary||'(未找到)'} ${d.binary_ok?'✅':'❌'}\n`+
+          `版本: ${d.version||'-'}\n`+
+          `配置文件: ${d.config_path} ${d.config_exists?'✅存在':'❌不存在'}\n`+
+          `systemd 服务: ${d.service} ${d.service_active?'✅运行中':'○未运行'}`;
+      } catch(e){ this.detectInfo='探测失败: '+e.message; }
+    },
+    async doTakeover(){
+      if(!confirm('接管现有配置？\n\n1. 当前 '+ 'config.json 会先备份为 .panel-bak-时间戳\n2. 现有入站（ss/vmess/vless/trojan/hysteria2）会被导入面板\n3. 之后面板写配置会覆盖该文件（每次写前自动备份 .bak）')) return;
+      this.takeoverMsg='接管中…'; this.takeoverOk=true;
+      try {
+        const d = await this.api('/api/singbox/takeover',{method:'POST'});
+        const sk = (d.skipped||[]).map(s=>`跳过 ${s.tag}（${s.reason}）`).join('\n');
+        this.takeoverMsg = `备份: ${d.backup||'(原无配置文件)'}\n导入 ${(d.imported||[]).length} 个入站: ${(d.imported||[]).join(', ')||'无'}${sk?'\n'+sk:''}`;
+        this.takeoverOk=true; this.loadInbounds(); this.refreshDash();
+      } catch(e){ this.takeoverMsg='接管失败: '+e.message; this.takeoverOk=false; }
+    },
     fmtSpeed(b){ if(!b) return '0 B/s'; if(b>=1048576) return (b/1048576).toFixed(2)+' MB/s'; if(b>=1024) return (b/1024).toFixed(1)+' KB/s'; return Math.round(b)+' B/s'; },
     fmtBytes(b){ if(!b) return '0 B'; if(b>=1073741824) return (b/1073741824).toFixed(2)+' GB'; if(b>=1048576) return (b/1048576).toFixed(1)+' MB'; if(b>=1024) return (b/1024).toFixed(1)+' KB'; return Math.round(b)+' B'; },
     fmtUptime(s){ if(!s) return '-'; const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return h>0?h+'h '+m+'m':m+'m'; },
