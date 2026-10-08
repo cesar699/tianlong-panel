@@ -10,13 +10,15 @@ from pydantic import BaseModel
 
 import config_mgr
 import inbounds as ib_mod
+import iptrack as iptrack_mod
 import process as proc_mod
 import singbox as sb_mod
 import stats as stats_mod
 import subscribe as sub_mod
 import takeover as takeover_mod
-from db import (_conn, audit_log, get_setting, init_db, list_audit, set_password,
-                set_setting, traffic_history_range, verify_password)
+from db import (_conn, audit_log, get_setting, init_db, ip_aggregate, ip_destinations,
+                ip_history, list_audit, set_password, set_setting,
+                traffic_history_range, verify_password)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(BASE_DIR, "..", "frontend")
@@ -443,6 +445,37 @@ def api_audit(limit: int = 100, token: str = Depends(auth)):
     return list_audit(min(limit, 500))
 
 
+# ---------- IP 行为监控 ----------
+
+@app.get("/api/ips")
+def api_ips(token: str = Depends(auth)):
+    """IP 聚合列表：流量、连接数、时长、首次/末次活跃、是否在线"""
+    return ip_aggregate(iptrack_mod.live_ips())
+
+
+@app.get("/api/ips/{ip}/destinations")
+def api_ip_destinations(ip: str, token: str = Depends(auth)):
+    """该 IP 访问过的目标 Top 20"""
+    return ip_destinations(ip)
+
+
+@app.get("/api/ips/{ip}")
+def api_ip_history(ip: str, limit: int = 50, offset: int = 0,
+                   token: str = Depends(auth)):
+    """该 IP 的连接历史（分页）"""
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    rows = ip_history(ip, limit, offset)
+    now = time.time()
+    for r in rows:
+        if r["ended_at"] is None:
+            r["duration_s"] = max(int(now - r["started_at"]), 0)
+            r["online"] = True
+        else:
+            r["online"] = False
+    return rows
+
+
 # ---------- 前端托管 ----------
 @app.get("/")
 def index():
@@ -454,3 +487,4 @@ def index():
 
 init_db()
 stats_mod.start_poller()
+iptrack_mod.start_tracker()

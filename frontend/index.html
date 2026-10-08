@@ -176,6 +176,84 @@
     </div>
 
     <!-- ===== 入站管理 ===== -->
+    <div v-if="tab==='ips'" class="space-y-4">
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="font-bold">IP 行为监控 <span class="text-xs text-slate-500 font-normal">{{ ips.length }} 个 IP · 记录保留30天</span></h2>
+          <button @click="loadIps" class="btn btn-gray !py-1 !px-2 text-xs">刷新</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs mono">
+            <thead><tr class="text-slate-500 text-left">
+              <th class="py-1 pr-2">客户端 IP</th><th class="py-1 pr-2">状态</th>
+              <th class="py-1 pr-2 text-right">↓ 流量</th><th class="py-1 pr-2 text-right">↑ 流量</th>
+              <th class="py-1 pr-2 text-right">连接数</th><th class="py-1 pr-2 text-right">累计时长</th>
+              <th class="py-1 pr-2">末次活跃</th><th></th>
+            </tr></thead>
+            <tbody>
+              <template v-for="r in ips" :key="r.ip">
+                <tr @click="selectIp(r.ip)" class="border-t border-slate-800 cursor-pointer hover:bg-slate-800/50"
+                    :class="{'bg-green-900/20': r.online}">
+                  <td class="py-1 pr-2">{{ r.ip }}</td>
+                  <td class="py-1 pr-2">
+                    <span v-if="r.online" class="text-green-400">● 在线</span>
+                    <span v-else class="text-slate-600">○ 离线</span>
+                  </td>
+                  <td class="py-1 pr-2 text-right text-green-400">{{ fmtBytes(r.down) }}</td>
+                  <td class="py-1 pr-2 text-right text-orange-400">{{ fmtBytes(r.up) }}</td>
+                  <td class="py-1 pr-2 text-right">{{ r.conns }}</td>
+                  <td class="py-1 pr-2 text-right text-slate-400">{{ fmtDur(r.duration) }}</td>
+                  <td class="py-1 pr-2 text-slate-400 whitespace-nowrap">{{ fmtTs(r.last_seen) }}</td>
+                  <td class="py-1 text-right text-slate-500">{{ ipSel===r.ip ? '▲' : '▼' }}</td>
+                </tr>
+                <tr v-if="ipSel===r.ip" class="border-t border-slate-800 bg-slate-900/40">
+                  <td colspan="8" class="py-2 px-2">
+                    <div class="grid md:grid-cols-2 gap-4">
+                      <div>
+                        <div class="text-slate-400 font-bold mb-1">连接历史 <span class="font-normal text-slate-600">（{{ r.ip }}）</span></div>
+                        <div class="space-y-1 max-h-64 overflow-y-auto">
+                          <div v-for="h in ipHist" :key="h.started_at+h.dst_host+h.dst_port"
+                               class="text-xs border-l-2 pl-2 py-0.5"
+                               :class="h.online ? 'border-green-500' : 'border-slate-700'">
+                            <div class="flex justify-between">
+                              <span class="mono">{{ fmtTs(h.started_at) }}</span>
+                              <span v-if="h.online" class="text-green-400">进行中</span>
+                              <span v-else class="text-slate-500">{{ fmtDur(h.duration_s) }}</span>
+                            </div>
+                            <div class="text-slate-400 truncate" :title="(h.dst_host||h.dst_ip)+':'+h.dst_port">
+                              {{ h.inbound_tag }} → {{ h.dst_host || h.dst_ip }}:{{ h.dst_port }}
+                            </div>
+                            <div class="text-slate-500">↓{{ fmtBytes(h.down_bytes) }} ↑{{ fmtBytes(h.up_bytes) }}</div>
+                          </div>
+                          <div v-if="!ipHist.length" class="text-slate-600 text-xs">暂无记录</div>
+                        </div>
+                        <button v-if="ipHistMore" @click="loadIpDetail(r.ip, true)" class="btn btn-gray !py-0.5 !px-2 text-xs mt-1">加载更多</button>
+                      </div>
+                      <div>
+                        <div class="text-slate-400 font-bold mb-1">常访目标 Top</div>
+                        <table class="w-full text-xs mono">
+                          <tbody>
+                            <tr v-for="d in ipDests" :key="d.dst" class="border-t border-slate-800">
+                              <td class="py-1 pr-2 truncate max-w-[200px]" :title="d.dst">{{ d.dst }}</td>
+                              <td class="py-1 pr-2 text-right text-slate-500">{{ d.conns }}次</td>
+                              <td class="py-1 text-right text-green-400">{{ fmtBytes(d.total) }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                        <div v-if="!ipDests.length" class="text-slate-600 text-xs">暂无记录</div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          <div v-if="!ips.length" class="text-slate-500 text-sm text-center py-4">暂无连接记录</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 入站管理 ===== -->
     <div v-if="tab==='inbounds'" class="space-y-4">
       <div class="card p-4">
         <h2 class="font-bold mb-3">新增入站</h2>
@@ -351,7 +429,7 @@ createApp({
     token: localStorage.getItem('sb_token') || '',
     loginPw: '', loginErr: '', mustChange: false,
     pwForm: { old:'', new1:'', new2:'' }, pwMsg: '', pwOk: false,
-    tab: 'dash', tabs: [{k:'dash',n:'📊 监控'},{k:'inbounds',n:'🔌 入站'},{k:'sub',n:'🔗 订阅'},{k:'ctrl',n:'⚙️ 控制'},{k:'settings',n:'🔧 设置'},{k:'audit',n:'📝 审计'}],
+    tab: 'dash', tabs: [{k:'dash',n:'📊 监控'},{k:'ips',n:'🌐 IP 监控'},{k:'inbounds',n:'🔌 入站'},{k:'sub',n:'🔗 订阅'},{k:'ctrl',n:'⚙️ 控制'},{k:'settings',n:'🔧 设置'},{k:'audit',n:'📝 审计'}],
     dash: { singbox:{running:false,version:'',uptime:0,inbound_count:0},
             speed:{up:0,down:0,up_peak:0,down_peak:0,history:[]},
             traffic:{total_up:0,total_down:0,by_inbound:[]}, hardware:{} },
@@ -364,13 +442,14 @@ createApp({
     detectInfo: '', takeoverMsg: '', takeoverOk: true,
     histRange: '24h', hist: {}, histChart: null,
     conns: [], auditList: [],
+    ips: [], ipSel: null, ipHist: [], ipDests: [], ipHistOffset: 0, ipHistMore: false,
     chart: null, timer: null,
   }},
   mounted() {
     if (this.token) this.init();
   },
   watch: {
-    tab(v){ if(v==='dash'){ this.$nextTick(()=>{ this.drawChart(); this.drawHist(); }); } }
+    tab(v){ if(v==='dash'){ this.$nextTick(()=>{ this.drawChart(); this.drawHist(); }); } if(v==='ips'){ this.loadIps(); } }
   },
   methods: {
     api(path, opts={}) {
@@ -413,7 +492,7 @@ createApp({
       clearInterval(this.timer);
       this.timer = setInterval(()=>{ if(this.tab==='dash') this.refreshDash(); }, 1000);
       clearInterval(this.timer2);
-      this.timer2 = setInterval(()=>{ if(this.tab==='dash'){ this.loadConns(); } }, 5000);
+      this.timer2 = setInterval(()=>{ if(this.tab==='dash'){ this.loadConns(); } if(this.tab==='ips'){ this.loadIps(); } }, 5000);
       this.$nextTick(()=>this.initChart());
     },
     async refreshDash() {
@@ -480,6 +559,24 @@ createApp({
     },
     async loadConns(){
       try { this.conns = await this.api('/api/connections'); } catch(e){}
+    },
+    async loadIps(){
+      try { this.ips = await this.api('/api/ips'); } catch(e){}
+    },
+    async selectIp(ip){
+      if (this.ipSel === ip) { this.ipSel = null; return; }
+      this.ipSel = ip; this.ipHist = []; this.ipDests = []; this.ipHistOffset = 0;
+      await this.loadIpDetail(ip, false);
+      try { this.ipDests = await this.api('/api/ips/'+encodeURIComponent(ip)+'/destinations'); } catch(e){}
+    },
+    async loadIpDetail(ip, more){
+      try {
+        const rows = await this.api('/api/ips/'+encodeURIComponent(ip)+'?limit=50&offset='+this.ipHistOffset);
+        if (more) this.ipHist = this.ipHist.concat(rows);
+        else this.ipHist = rows;
+        this.ipHistOffset += rows.length;
+        this.ipHistMore = rows.length >= 50;
+      } catch(e){}
     },
     async closeConn(c){
       if(!confirm(`关闭连接 ${c.src} → ${c.dst}？`)) return;
