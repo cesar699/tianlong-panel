@@ -1,0 +1,14 @@
+services:
+  singbox-panel:
+    build: .
+    container_name: singbox-panel
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      # 入站端口范围：按需放行你实际使用的端口，例如：
+      # - "8388:8388"
+      # - "8388:8388/udp"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DATA_DIR=/app/data

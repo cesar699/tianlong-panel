@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>sing-box 面板</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  body { background:#0b0f1a; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb { background:#2d3748; border-radius:4px; }
+  .card { background:#131a2b; border:1px solid #1e2a45; border-radius:12px; }
+  .dot-on { background:#22c55e; box-shadow:0 0 8px #22c55e; }
+  .dot-off { background:#ef4444; box-shadow:0 0 8px #ef4444; }
+  input,select { background:#0b0f1a !important; border:1px solid #2d3748 !important; border-radius:8px; color:#e2e8f0 !important; padding:8px 12px; }
+  input:focus,select:focus { outline:none; border-color:#3b82f6 !important; }
+  .btn { border-radius:8px; padding:8px 16px; font-size:14px; transition:all .15s; }
+  .btn-blue { background:#2563eb; } .btn-blue:hover { background:#1d4ed8; }
+  .btn-green { background:#16a34a; } .btn-green:hover { background:#15803d; }
+  .btn-red { background:#dc2626; } .btn-red:hover { background:#b91c1c; }
+  .btn-gray { background:#374151; } .btn-gray:hover { background:#4b5563; }
+  .tab-active { background:#1e3a8a; color:#fff; }
+  .mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+<div id="app" v-cloak>
+
+  <!-- 登录 -->
+  <div v-if="!token" class="flex items-center justify-center min-h-screen px-4">
+    <div class="card p-8 w-full max-w-sm">
+      <h1 class="text-2xl font-bold text-center mb-1">📦 sing-box 面板</h1>
+      <p class="text-slate-500 text-sm text-center mb-6">轻量单用户版</p>
+      <div v-if="mustChange" class="mb-4">
+        <p class="text-amber-400 text-sm mb-3">首次登录，请修改默认密码</p>
+        <input v-model="pwForm.old" type="password" placeholder="原密码（admin）" class="w-full mb-2">
+        <input v-model="pwForm.new1" type="password" placeholder="新密码（≥4位）" class="w-full mb-2">
+        <input v-model="pwForm.new2" type="password" placeholder="确认新密码" class="w-full mb-3">
+        <button @click="changePw(true)" class="btn btn-blue w-full">修改并登录</button>
+      </div>
+      <div v-else>
+        <input v-model="loginPw" type="password" placeholder="管理密码" @keyup.enter="doLogin" class="w-full mb-3">
+        <button @click="doLogin" class="btn btn-blue w-full">登录</button>
+      </div>
+      <p v-if="loginErr" class="text-red-400 text-sm mt-3 text-center">{{ loginErr }}</p>
+    </div>
+  </div>
+
+  <!-- 主界面 -->
+  <div v-else class="max-w-7xl mx-auto px-4 py-6">
+    <header class="flex items-center justify-between mb-6">
+      <h1 class="text-xl font-bold">📦 sing-box 面板 <span class="text-xs text-slate-500 font-normal">v{{ dash.singbox.version }}</span></h1>
+      <div class="flex gap-2">
+        <span class="text-xs px-2 py-1 rounded" :class="dash.singbox.running ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'">
+          {{ dash.singbox.running ? '● 运行中' : '● 已停止' }}
+        </span>
+        <button @click="doLogout" class="btn btn-gray !py-1 !px-3 text-xs">退出</button>
+      </div>
+    </header>
+
+    <nav class="flex gap-2 mb-6 flex-wrap">
+      <button v-for="t in tabs" :key="t.k" @click="tab=t.k" class="btn btn-gray" :class="{'tab-active':tab===t.k}">{{ t.n }}</button>
+    </nav>
+
+    <!-- ===== 监控大屏 ===== -->
+    <div v-if="tab==='dash'" class="space-y-4">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="card p-4">
+          <div class="text-slate-500 text-xs mb-1">实时下行</div>
+          <div class="text-2xl font-bold text-green-400 mono">{{ fmtSpeed(dash.speed.down) }}</div>
+          <div class="text-xs text-slate-500 mt-1">峰值 {{ fmtSpeed(dash.speed.down_peak) }}</div>
+        </div>
+        <div class="card p-4">
+          <div class="text-slate-500 text-xs mb-1">实时上行</div>
+          <div class="text-2xl font-bold text-orange-400 mono">{{ fmtSpeed(dash.speed.up) }}</div>
+          <div class="text-xs text-slate-500 mt-1">峰值 {{ fmtSpeed(dash.speed.up_peak) }}</div>
+        </div>
+        <div class="card p-4">
+          <div class="text-slate-500 text-xs mb-1">总流量 ↓ / ↑</div>
+          <div class="text-lg font-bold mono">{{ fmtBytes(dash.traffic.total_down) }} <span class="text-slate-500 text-sm">/ {{ fmtBytes(dash.traffic.total_up) }}</span></div>
+          <div class="text-xs text-slate-500 mt-1">{{ dash.singbox.inbound_count }} 个入站 · 运行 {{ fmtUptime(dash.singbox.uptime) }}</div>
+        </div>
+        <div class="card p-4">
+          <div class="text-slate-500 text-xs mb-1">服务器</div>
+          <div class="text-sm space-y-1">
+            <div>CPU <div class="h-1.5 bg-slate-700 rounded mt-1"><div class="h-1.5 bg-blue-500 rounded" :style="{width: hw.cpu_percent+'%'}"></div></div></div>
+            <div class="flex justify-between text-xs text-slate-400"><span>{{ hw.cpu_percent }}%</span><span>负载 {{ (hw.load||[]).join(' ') }}</span></div>
+            <div>内存 {{ hw.mem_percent }}% <span class="text-slate-500">({{ hw.mem_used_gb }}/{{ hw.mem_total_gb }}G)</span></div>
+            <div>硬盘 {{ hw.disk_percent }}% <span class="text-slate-500">({{ hw.disk_used_gb }}/{{ hw.disk_total_gb }}G)</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="font-bold">实时网速 <span class="text-xs text-slate-500 font-normal">最近60秒 · 每秒刷新</span></h2>
+          <button @click="resetPeak" class="btn btn-gray !py-1 !px-2 text-xs">峰值清零</button>
+        </div>
+        <div id="speedChart" style="height:260px"></div>
+      </div>
+
+      <div class="card p-4">
+        <h2 class="font-bold mb-3">入站状态</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div v-for="ib in dash.traffic.by_inbound" :key="ib.id" class="bg-[#0b0f1a] rounded-lg p-3 border border-slate-800">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-bold">{{ ib.tag }}</span>
+              <span class="w-2.5 h-2.5 rounded-full inline-block" :class="ib.online?'dot-on':'dot-off'"></span>
+            </div>
+            <div class="text-xs text-slate-400 space-y-1 mono">
+              <div>{{ ib.protocol }} :{{ ib.port }} · {{ ib.conn_count }} 连接</div>
+              <div class="text-green-400">↓ {{ fmtSpeed(ib.down_rate) }} <span class="text-slate-500">累计 {{ fmtBytes(ib.down) }}</span></div>
+              <div class="text-orange-400">↑ {{ fmtSpeed(ib.up_rate) }} <span class="text-slate-500">累计 {{ fmtBytes(ib.up) }}</span></div>
+            </div>
+          </div>
+          <div v-if="!dash.traffic.by_inbound.length" class="text-slate-500 text-sm col-span-3 text-center py-6">暂无入站，去「入站管理」添加</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 入站管理 ===== -->
+    <div v-if="tab==='inbounds'" class="space-y-4">
+      <div class="card p-4">
+        <h2 class="font-bold mb-3">新增入站</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <select v-model="newIb.protocol">
+            <option value="shadowsocks">shadowsocks</option>
+            <option value="vmess">vmess</option>
+            <option value="vless">vless + reality</option>
+            <option value="trojan">trojan + reality</option>
+            <option value="hysteria2">hysteria2</option>
+          </select>
+          <input v-model.number="newIb.port" type="number" placeholder="端口">
+          <input v-model="newIb.tag" placeholder="备注（可选）">
+          <select v-if="newIb.protocol==='shadowsocks'" v-model="newIb.method">
+            <option>aes-256-gcm</option><option>aes-128-gcm</option><option>chacha20-ietf-poly1305</option>
+            <option>2022-blake3-aes-128-gcm</option><option>2022-blake3-aes-256-gcm</option>
+          </select>
+        </div>
+        <button @click="createInbound" class="btn btn-blue mt-3">添加</button>
+        <p v-if="ibErr" class="text-red-400 text-sm mt-2">{{ ibErr }}</p>
+      </div>
+
+      <div v-for="ib in inbounds" :key="ib.id" class="card p-4">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <span class="font-bold">{{ ib.tag }}</span>
+            <span class="text-xs text-slate-500 ml-2 mono">{{ ib.protocol }} :{{ ib.port }}</span>
+            <span class="text-xs ml-2" :class="ib.enabled?'text-green-400':'text-slate-500'">{{ ib.enabled?'启用':'停用' }}</span>
+          </div>
+          <div class="flex gap-2">
+            <button @click="toggleIb(ib)" class="btn btn-gray !py-1 !px-2 text-xs">{{ ib.enabled?'停用':'启用' }}</button>
+            <button @click="regenCred(ib)" class="btn btn-gray !py-1 !px-2 text-xs" title="重新生成主凭证">换凭证</button>
+            <button @click="delInbound(ib)" class="btn btn-red !py-1 !px-2 text-xs">删除</button>
+          </div>
+        </div>
+        <div class="mt-2 text-xs mono bg-[#0b0f1a] rounded p-2 break-all">
+          <div class="text-slate-500">主凭证:</div>
+          <div class="select-all">{{ ib.settings.credential }}</div>
+          <div v-if="ib.protocol==='vless'||ib.protocol==='trojan'" class="mt-1 text-slate-500">
+            reality 公钥: <span class="select-all text-slate-300">{{ ib.settings.reality?.public_key }}</span>
+          </div>
+          <div v-if="(ib.settings.backups||[]).length" class="mt-1">
+            <span class="text-slate-500">备用凭证:</span>
+            <div v-for="b in ib.settings.backups" class="flex items-center justify-between gap-2">
+              <span class="select-all truncate">{{ b }}</span>
+              <button @click="delBackup(ib,b)" class="text-red-400 shrink-0">删除</button>
+            </div>
+          </div>
+        </div>
+        <button v-if="(ib.settings.backups||[]).length<2" @click="addBackup(ib)" class="btn btn-gray !py-1 !px-2 text-xs mt-2">+ 备用凭证</button>
+      </div>
+    </div>
+
+    <!-- ===== 订阅 ===== -->
+    <div v-if="tab==='sub'" class="space-y-4">
+      <div class="card p-4">
+        <h2 class="font-bold mb-2">聚合订阅</h2>
+        <div class="flex gap-2 items-center flex-wrap">
+          <input :value="subUrl" readonly class="flex-1 min-w-[200px] mono text-xs">
+          <button @click="copy(subUrl)" class="btn btn-blue !py-1 text-xs">复制</button>
+        </div>
+        <p class="text-xs text-slate-500 mt-2">纯文本，每行一个节点，可直接导入客户端</p>
+      </div>
+      <div v-for="s in subLinks" :key="s.tag" class="card p-4">
+        <div class="font-bold mb-2">{{ s.tag }} <span class="text-xs text-slate-500 font-normal">{{ s.protocol }}</span></div>
+        <div class="flex flex-col md:flex-row gap-4">
+          <img :src="s.qr" class="w-40 h-40 bg-white rounded shrink-0" alt="qr">
+          <div class="flex-1 min-w-0">
+            <div class="text-xs mono bg-[#0b0f1a] rounded p-2 break-all max-h-24 overflow-auto">{{ s.link }}</div>
+            <button @click="copy(s.link)" class="btn btn-blue !py-1 text-xs mt-2">复制链接</button>
+          </div>
+        </div>
+      </div>
+      <div v-if="!subLinks.length" class="text-slate-500 text-sm text-center py-6">暂无入站</div>
+    </div>
+
+    <!-- ===== 控制 ===== -->
+    <div v-if="tab==='ctrl'" class="space-y-4">
+      <div class="card p-4">
+        <h2 class="font-bold mb-3">进程控制</h2>
+        <div class="flex gap-2 flex-wrap">
+          <button @click="sbAct('start')" class="btn btn-green">启动</button>
+          <button @click="sbAct('stop')" class="btn btn-red">停止</button>
+          <button @click="sbAct('restart')" class="btn btn-blue">重启</button>
+          <button @click="sbCheck" class="btn btn-gray">校验配置</button>
+        </div>
+        <p v-if="ctrlMsg" class="text-sm mt-2" :class="ctrlOk?'text-green-400':'text-red-400'">{{ ctrlMsg }}</p>
+      </div>
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="font-bold">实时日志</h2>
+          <button @click="loadLogs" class="btn btn-gray !py-1 text-xs">刷新</button>
+        </div>
+        <pre class="text-xs mono bg-[#0b0f1a] rounded p-3 h-64 overflow-auto whitespace-pre-wrap">{{ logs }}</pre>
+      </div>
+      <div class="card p-4">
+        <h2 class="font-bold mb-2">config.json</h2>
+        <pre class="text-xs mono bg-[#0b0f1a] rounded p-3 h-64 overflow-auto">{{ rawConfig }}</pre>
+      </div>
+    </div>
+
+    <!-- ===== 设置 ===== -->
+    <div v-if="tab==='settings'" class="space-y-4">
+      <div class="card p-4 max-w-lg">
+        <h2 class="font-bold mb-3">面板设置</h2>
+        <label class="text-xs text-slate-500">公网地址（用于生成订阅链接，不填则用访问 IP）</label>
+        <input v-model="settings.public_host" placeholder="如 1.2.3.4 或 example.com" class="w-full mb-3 mt-1">
+        <label class="text-xs text-slate-500">sing-box 版本</label>
+        <input v-model="settings.singbox_version" class="w-full mb-3 mt-1">
+        <div class="flex gap-2">
+          <button @click="saveSettings" class="btn btn-blue">保存</button>
+          <button @click="dlBinary" class="btn btn-gray">重新下载 sing-box</button>
+        </div>
+        <p v-if="setMsg" class="text-sm mt-2 text-green-400">{{ setMsg }}</p>
+      </div>
+      <div class="card p-4 max-w-lg">
+        <h2 class="font-bold mb-3">修改密码</h2>
+        <input v-model="pwForm.old" type="password" placeholder="原密码" class="w-full mb-2">
+        <input v-model="pwForm.new1" type="password" placeholder="新密码" class="w-full mb-2">
+        <input v-model="pwForm.new2" type="password" placeholder="确认" class="w-full mb-3">
+        <button @click="changePw(false)" class="btn btn-blue">修改</button>
+        <p v-if="pwMsg" class="text-sm mt-2" :class="pwOk?'text-green-400':'text-red-400'">{{ pwMsg }}</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp } = Vue;
+createApp({
+  data() { return {
+    token: localStorage.getItem('sb_token') || '',
+    loginPw: '', loginErr: '', mustChange: false,
+    pwForm: { old:'', new1:'', new2:'' }, pwMsg: '', pwOk: false,
+    tab: 'dash', tabs: [{k:'dash',n:'📊 监控'},{k:'inbounds',n:'🔌 入站'},{k:'sub',n:'🔗 订阅'},{k:'ctrl',n:'⚙️ 控制'},{k:'settings',n:'🔧 设置'}],
+    dash: { singbox:{running:false,version:'',uptime:0,inbound_count:0},
+            speed:{up:0,down:0,up_peak:0,down_peak:0,history:[]},
+            traffic:{total_up:0,total_down:0,by_inbound:[]}, hardware:{} },
+    hw: {},
+    inbounds: [], ibErr: '',
+    newIb: { protocol:'shadowsocks', port:8388, tag:'', method:'aes-256-gcm' },
+    subLinks: [], subUrl: '',
+    logs: '', rawConfig: '', ctrlMsg: '', ctrlOk: true,
+    settings: { public_host:'', singbox_version:'' }, setMsg: '',
+    chart: null, timer: null,
+  }},
+  mounted() {
+    if (this.token) this.init();
+  },
+  methods: {
+    api(path, opts={}) {
+      opts.headers = Object.assign({'Authorization':'Bearer '+this.token,'Content-Type':'application/json'}, opts.headers||{});
+      return fetch(path, opts).then(async r => {
+        if (r.status===401) { this.token=''; localStorage.removeItem('sb_token'); throw new Error('登录过期'); }
+        const t = await r.text();
+        let d; try { d = JSON.parse(t); } catch(e) { d = t; }
+        if (!r.ok) throw new Error((d&&d.detail)||('请求失败 '+r.status));
+        return d;
+      });
+    },
+    async doLogin() {
+      this.loginErr='';
+      try {
+        const d = await this.api('/api/login',{method:'POST',body:JSON.stringify({password:this.loginPw})});
+        if (d.must_change) { this.mustChange=true; this.pwForm.old=this.loginPw; return; }
+        this.token=d.token; localStorage.setItem('sb_token',d.token); this.init();
+      } catch(e){ this.loginErr=e.message; }
+    },
+    async changePw(first) {
+      this.loginErr=''; this.pwMsg='';
+      if (this.pwForm.new1!==this.pwForm.new2) { const m='两次输入不一致'; first?this.loginErr=m:(this.pwMsg=m,this.pwOk=false); return; }
+      try {
+        if (first) {
+          // 先用旧密码登录拿 token
+          const d = await this.api('/api/login',{method:'POST',body:JSON.stringify({password:this.pwForm.old})});
+          this.token=d.token; localStorage.setItem('sb_token',d.token);
+        }
+        await this.api('/api/change-password',{method:'POST',body:JSON.stringify({old_password:this.pwForm.old,new_password:this.pwForm.new1})});
+        if (first) { this.mustChange=false; this.init(); }
+        else { this.pwMsg='修改成功'; this.pwOk=true; this.pwForm={old:'',new1:'',new2:''}; }
+      } catch(e){ first?this.loginErr=e.message:(this.pwMsg=e.message,this.pwOk=false); }
+    },
+    doLogout(){ this.api('/api/logout',{method:'POST'}).catch(()=>{}); this.token=''; localStorage.removeItem('sb_token'); clearInterval(this.timer); },
+    init() {
+      this.refreshDash(); this.loadInbounds(); this.loadSub(); this.loadLogs(); this.loadConfig(); this.loadSettings();
+      this.subUrl = location.origin + '/sub';
+      clearInterval(this.timer);
+      this.timer = setInterval(()=>{ if(this.tab==='dash') this.refreshDash(); }, 1000);
+      this.$nextTick(()=>this.initChart());
+    },
+    async refreshDash() {
+      try {
+        this.dash = await this.api('/api/dashboard');
+        this.hw = this.dash.hardware||{};
+        this.drawChart();
+      } catch(e){}
+    },
+    initChart() {
+      const el = document.getElementById('speedChart');
+      if (!el || typeof echarts==='undefined') return;
+      this.chart = echarts.init(el, null, {renderer:'canvas'});
+    },
+    drawChart() {
+      if (!this.chart) this.initChart();
+      if (!this.chart) return;
+      const h = this.dash.speed.history||[];
+      this.chart.setOption({
+        backgroundColor:'transparent',
+        grid:{left:50,right:12,top:12,bottom:24},
+        tooltip:{trigger:'axis',formatter:p=>{let s='';p.forEach(x=>{s+=x.seriesName+' '+this.fmtSpeed(x.value)+'<br/>'});return s;}},
+        legend:{textStyle:{color:'#94a3b8'},top:0},
+        xAxis:{type:'category',data:h.map(x=>new Date(x.t*1000).toLocaleTimeString('zh-CN',{hour12:false})),axisLabel:{color:'#64748b',fontSize:10}},
+        yAxis:{type:'value',axisLabel:{color:'#64748b',fontSize:10,formatter:v=>this.fmtSpeed(v)}},
+        series:[
+          {name:'下行',type:'line',smooth:true,showSymbol:false,data:h.map(x=>x.down),lineStyle:{color:'#22c55e',width:2},areaStyle:{color:'rgba(34,197,94,.12)'}},
+          {name:'上行',type:'line',smooth:true,showSymbol:false,data:h.map(x=>x.up),lineStyle:{color:'#fb923c',width:2},areaStyle:{color:'rgba(251,146,60,.12)'}},
+        ],
+        animation:false
+      });
+    },
+    async resetPeak(){ await this.api('/api/dashboard/reset-peak',{method:'POST'}).catch(()=>{}); },
+    async loadInbounds(){ try{ this.inbounds = await this.api('/api/inbounds'); }catch(e){} },
+    async createInbound() {
+      this.ibErr='';
+      try {
+        const body = {protocol:this.newIb.protocol, port:this.newIb.port, tag:this.newIb.tag, settings:{}};
+        if (this.newIb.protocol==='shadowsocks') body.settings.method=this.newIb.method;
+        await this.api('/api/inbounds',{method:'POST',body:JSON.stringify(body)});
+        this.newIb.port=''; this.newIb.tag='';
+        this.loadInbounds(); this.refreshDash();
+      } catch(e){ this.ibErr=e.message; }
+    },
+    async toggleIb(ib){ await this.api('/api/inbounds/'+ib.id,{method:'PUT',body:JSON.stringify({enabled:!ib.enabled})}).catch(e=>alert(e.message)); this.loadInbounds(); this.refreshDash(); },
+    async delInbound(ib){ if(!confirm('删除入站 '+ib.tag+'？'))return; await this.api('/api/inbounds/'+ib.id,{method:'DELETE'}); this.loadInbounds(); this.refreshDash(); },
+    async regenCred(ib){ if(!confirm('重新生成主凭证？旧链接将失效'))return; await this.api('/api/inbounds/'+ib.id+'/regen-credential',{method:'POST'}); this.loadInbounds(); this.loadSub(); },
+    async addBackup(ib){ await this.api('/api/inbounds/'+ib.id+'/backups',{method:'POST',body:JSON.stringify({})}).catch(e=>alert(e.message)); this.loadInbounds(); },
+    async delBackup(ib,b){ await this.api('/api/inbounds/'+ib.id+'/backups?credential='+encodeURIComponent(b),{method:'DELETE'}); this.loadInbounds(); },
+    async loadSub(){
+      this.subLinks=[];
+      for (const ib of this.inbounds) {
+        try { this.subLinks.push(await this.api('/api/inbounds/'+ib.id+'/link')); } catch(e){}
+      }
+    },
+    copy(t){ navigator.clipboard.writeText(t).then(()=>alert('已复制')); },
+    async sbAct(a){ const d=await this.api('/api/singbox/'+a,{method:'POST'}); this.ctrlMsg=d.msg; this.ctrlOk=d.ok; this.refreshDash(); this.loadLogs(); },
+    async sbCheck(){ const d=await this.api('/api/singbox/check',{method:'POST'}); this.ctrlMsg=d.msg; this.ctrlOk=d.ok; },
+    async loadLogs(){ try{ const d=await this.api('/api/singbox/logs?lines=120'); this.logs=d.logs||'(空)'; }catch(e){} },
+    async loadConfig(){ try{ this.rawConfig=JSON.stringify(await this.api('/api/singbox/config'),null,2); }catch(e){} },
+    async loadSettings(){ try{ this.settings=await this.api('/api/settings'); }catch(e){} },
+    async saveSettings(){ await this.api('/api/settings',{method:'POST',body:JSON.stringify(this.settings)}); this.setMsg='已保存'; setTimeout(()=>this.setMsg='',2000); },
+    async dlBinary(){ if(!confirm('从 GitHub 下载 sing-box 二进制？'))return; const d=await this.api('/api/singbox/download',{method:'POST'}).catch(e=>alert(e.message)); if(d) alert('下载成功: '+d.version); },
+    fmtSpeed(b){ if(!b) return '0 B/s'; if(b>=1048576) return (b/1048576).toFixed(2)+' MB/s'; if(b>=1024) return (b/1024).toFixed(1)+' KB/s'; return Math.round(b)+' B/s'; },
+    fmtBytes(b){ if(!b) return '0 B'; if(b>=1073741824) return (b/1073741824).toFixed(2)+' GB'; if(b>=1048576) return (b/1048576).toFixed(1)+' MB'; if(b>=1024) return (b/1024).toFixed(1)+' KB'; return Math.round(b)+' B'; },
+    fmtUptime(s){ if(!s) return '-'; const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return h>0?h+'h '+m+'m':m+'m'; },
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
